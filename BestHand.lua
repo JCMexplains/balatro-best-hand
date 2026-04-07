@@ -417,7 +417,31 @@ local function score_combo(cards, all_cards)
     -- apply joker bonuses
     chips, mult = apply_jokers(chips, mult, cards, hand_name, all_cards, played)
 
-    return hand_name, chips * mult
+    return hand_name, chips * mult, scoring
+end
+
+local rank_names = {
+    [2] = "2", [3] = "3", [4] = "4", [5] = "5", [6] = "6",
+    [7] = "7", [8] = "8", [9] = "9", [10] = "10",
+    [11] = "J", [12] = "Q", [13] = "K", [14] = "A",
+}
+local suit_symbols = {
+    ["Hearts"] = "h", ["Diamonds"] = "d",
+    ["Clubs"] = "c", ["Spades"] = "s",
+}
+
+local function card_label(card)
+    local rank = rank_names[card.base.id] or "?"
+    local suit = suit_symbols[card.base.suit] or "?"
+    return rank .. suit
+end
+
+local function cards_label(cards)
+    local labels = {}
+    for _, card in ipairs(cards) do
+        labels[#labels + 1] = card_label(card)
+    end
+    return table.concat(labels, ", ")
 end
 
 local function analyze_hand()
@@ -428,9 +452,9 @@ local function analyze_hand()
     for size = 5, 1, -1 do
         if #cards >= size then
             for _, combo in ipairs(combinations(cards, size)) do
-                local name, score = score_combo(combo, cards)
+                local name, score, scoring = score_combo(combo, cards)
                 if name then
-                    best[#best + 1] = { name = name, score = score }
+                    best[#best + 1] = { name = name, score = score, cards = scoring }
                 end
             end
         end
@@ -455,7 +479,7 @@ SMODS.Keybind({
         if not results or #results == 0 then return end
         local lines = {"", "-- Best Hands --"}
         for i, r in ipairs(results) do
-            lines[#lines + 1] = i .. ". " .. r.name .. " (~" .. math.floor(r.score) .. ")"
+            lines[#lines + 1] = i .. ". " .. r.name .. " (" .. cards_label(r.cards) .. ")     ~ " .. math.floor(r.score) .. " points"
         end
         for _, line in ipairs(lines) do print(line) end
     end
