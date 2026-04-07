@@ -42,9 +42,26 @@ local function score_combo(cards)
                     mult = mult * 2
                 elseif name == "Stone Card" then
                     chips = chips + 50
+                elseif name == "Lucky Card" then
+                    -- average expected value: 1 in 5 chance of +20 mult
+                    mult = mult + 4
+                elseif name == "Steel Card" then
+                    mult = mult * 1.5
                 end
                 -- perma_bonus is confirmed in dump
                 chips = chips + (ability.perma_bonus or 0)
+            end
+
+            -- edition bonuses
+            local edition = card.edition
+            if edition then
+                if edition.foil then
+                    chips = chips + 50
+                elseif edition.holo then
+                    mult = mult + 10
+                elseif edition.polychrome then
+                    mult = mult * 1.5
+                end
             end
         end
     end
