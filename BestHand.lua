@@ -485,9 +485,15 @@ local function analyze_hand()
             seen[entry.name] = true
             entry.alts = {}
             top[#top + 1] = entry
-        elseif top[#top].name == entry.name and entry.score == top[#top].score then
+        elseif top[#top].name == entry.name and entry.score == top[#top].score
+            and #entry.play == #top[#top].play then
             local alts = top[#top].alts
-            alts[#alts + 1] = entry
+            local label = cards_label(entry.cards)
+            if not alts.seen_labels then alts.seen_labels = {} end
+            if not alts.seen_labels[label] then
+                alts.seen_labels[label] = true
+                alts[#alts + 1] = entry
+            end
         end
     end
     return top
