@@ -15,7 +15,7 @@ local function combinations(list, k)
     return result
 end
 
-local function score_combo(cards)
+local function score_combo(cards, all_cards)
     local hand_name, _, _ = G.FUNCS.get_poker_hand_info(cards)
     if not hand_name then return nil, 0 end
     local hand_info = G.GAME.hands[hand_name]
@@ -23,6 +23,12 @@ local function score_combo(cards)
 
     local chips = hand_info.chips
     local mult = hand_info.mult
+
+    -- build set of played cards for held-in-hand lookup
+    local played = {}
+    for _, card in ipairs(cards) do
+        played[card] = true
+    end
 
     for _, card in ipairs(cards) do
         -- skip debuffed cards entirely
@@ -45,8 +51,6 @@ local function score_combo(cards)
                 elseif name == "Lucky Card" then
                     -- average expected value: 1 in 5 chance of +20 mult
                     mult = mult + 4
-                elseif name == "Steel Card" then
-                    mult = mult * 1.5
                 end
                 -- perma_bonus is confirmed in dump
                 chips = chips + (ability.perma_bonus or 0)
@@ -66,6 +70,16 @@ local function score_combo(cards)
         end
     end
 
+    -- held-in-hand effects (cards NOT played)
+    for _, card in ipairs(all_cards) do
+        if not played[card] and not card.debuff then
+            local ability = card.ability
+            if ability and ability.name == "Steel Card" then
+                mult = mult * 1.5
+            end
+        end
+    end
+
     return hand_name, chips * mult
 end
 
@@ -77,7 +91,7 @@ local function analyze_hand()
     for size = 5, 1, -1 do
         if #cards >= size then
             for _, combo in ipairs(combinations(cards, size)) do
-                local name, score = score_combo(combo)
+                local name, score = score_combo(combo, cards)
                 if name then
                     best[#best + 1] = { name = name, score = score }
                 end
