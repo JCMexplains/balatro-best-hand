@@ -473,15 +473,22 @@ local function analyze_hand()
             end
         end
     end
-    table.sort(best, function(a, b) return a.score > b.score end)
+    table.sort(best, function(a, b)
+        if a.score ~= b.score then return a.score > b.score end
+        return #a.play < #b.play
+    end)
     local seen = {}
     local top = {}
     for _, entry in ipairs(best) do
         if not seen[entry.name] then
+            if #top >= 3 then break end
             seen[entry.name] = true
+            entry.alts = {}
             top[#top + 1] = entry
+        elseif top[#top].name == entry.name and entry.score == top[#top].score then
+            local alts = top[#top].alts
+            alts[#alts + 1] = entry
         end
-        if #top >= 3 then break end
     end
     return top
 end
@@ -497,7 +504,15 @@ SMODS.Keybind({
             if #r.play > #r.cards then
                 play_str = cards_label(r.cards) .. " + " .. cards_label_exclude(r.play, r.cards)
             end
-            lines[#lines + 1] = i .. ". " .. r.name .. " (" .. play_str .. ")     ~ " .. math.floor(r.score) .. " points"
+            local line = i .. ". " .. r.name .. " (" .. play_str .. ")     ~ " .. math.floor(r.score) .. " points"
+            if r.alts and #r.alts > 0 then
+                local alt_labels = {}
+                for _, alt in ipairs(r.alts) do
+                    alt_labels[#alt_labels + 1] = cards_label(alt.cards)
+                end
+                line = line .. "  (or " .. table.concat(alt_labels, ", or ") .. ")"
+            end
+            lines[#lines + 1] = line
         end
         for _, line in ipairs(lines) do print(line) end
     end
