@@ -85,7 +85,7 @@ SMODS.Keybind({
     action = function(self)
         local results = analyze_hand()
         if not results or #results == 0 then return end
-        local lines = {"-- Best Hands --"}
+        local lines = {"", "-- Best Hands --"}
         for i, r in ipairs(results) do
             lines[#lines + 1] = i .. ". " .. r.name .. " (~" .. math.floor(r.score) .. ")"
         end
