@@ -15,6 +15,254 @@ local function combinations(list, k)
     return result
 end
 
+-- Hand-type containment tables for joker conditions
+local contains_pair = {
+    ["Pair"] = true, ["Two Pair"] = true, ["Three of a Kind"] = true,
+    ["Full House"] = true, ["Four of a Kind"] = true, ["Five of a Kind"] = true,
+    ["Flush House"] = true, ["Flush Five"] = true,
+}
+local contains_three = {
+    ["Three of a Kind"] = true, ["Full House"] = true,
+    ["Four of a Kind"] = true, ["Five of a Kind"] = true,
+    ["Flush House"] = true, ["Flush Five"] = true,
+}
+local contains_four = {
+    ["Four of a Kind"] = true, ["Five of a Kind"] = true, ["Flush Five"] = true,
+}
+local contains_straight = {
+    ["Straight"] = true, ["Straight Flush"] = true, ["Royal Flush"] = true,
+}
+local contains_flush = {
+    ["Flush"] = true, ["Straight Flush"] = true, ["Royal Flush"] = true,
+    ["Flush House"] = true, ["Flush Five"] = true,
+}
+local contains_two_pair = {
+    ["Two Pair"] = true, ["Full House"] = true, ["Flush House"] = true,
+}
+
+local fib_ranks = { [2] = true, [3] = true, [5] = true, [8] = true, [14] = true }
+
+local function count_suits(cards)
+    local counts = { Hearts = 0, Diamonds = 0, Clubs = 0, Spades = 0 }
+    for _, card in ipairs(cards) do
+        if not card.debuff then
+            if card.ability and card.ability.name == "Wild Card" then
+                for s, _ in pairs(counts) do
+                    counts[s] = counts[s] + 1
+                end
+            else
+                local suit = card.base.suit
+                if counts[suit] then
+                    counts[suit] = counts[suit] + 1
+                end
+            end
+        end
+    end
+    return counts
+end
+
+local function count_ranks(cards)
+    local face, ace, fib, even, odd = 0, 0, 0, 0, 0
+    for _, card in ipairs(cards) do
+        if not card.debuff then
+            local id = card.base.id
+            if id >= 11 and id <= 13 then face = face + 1 end
+            if id == 14 then ace = ace + 1 end
+            if fib_ranks[id] then fib = fib + 1 end
+            if id >= 2 and id <= 10 and id % 2 == 0 then even = even + 1 end
+            if id == 14 or (id >= 1 and id <= 10 and id % 2 == 1) then odd = odd + 1 end
+        end
+    end
+    return { face = face, ace = ace, fib = fib, even = even, odd = odd }
+end
+
+local function apply_jokers(chips, mult, cards, hand_name, all_cards, played)
+    if not G.jokers or not G.jokers.cards then return chips, mult end
+
+    local suits = count_suits(cards)
+    local ranks = count_ranks(cards)
+    local num_played = #cards
+
+    for _, joker in ipairs(G.jokers.cards) do
+        if not joker.debuff then
+            local ability = joker.ability or {}
+            local name = ability.name or ""
+
+            -----------------------------------------------
+            -- Tier 1: Always-apply and game-state jokers
+            -----------------------------------------------
+            if name == "Joker" then
+                mult = mult + 4
+            elseif name == "Greedy Joker" then
+                mult = mult + 3 * suits.Diamonds
+            elseif name == "Lusty Joker" then
+                mult = mult + 3 * suits.Hearts
+            elseif name == "Wrathful Joker" then
+                mult = mult + 3 * suits.Spades
+            elseif name == "Gluttonous Joker" then
+                mult = mult + 3 * suits.Clubs
+            elseif name == "Half Joker" then
+                if num_played <= 3 then mult = mult + 20 end
+            elseif name == "Banner" then
+                local discards = (G.GAME.current_round and G.GAME.current_round.discards_left) or 0
+                chips = chips + 30 * discards
+            elseif name == "Mystic Summit" then
+                local discards = (G.GAME.current_round and G.GAME.current_round.discards_left) or 0
+                if discards == 0 then mult = mult + 15 end
+            elseif name == "Abstract Joker" then
+                mult = mult + 3 * #G.jokers.cards
+            elseif name == "Stuntman" then
+                chips = chips + 250
+            elseif name == "Supernova" then
+                local times = (G.GAME.hands[hand_name] and G.GAME.hands[hand_name].played) or 0
+                mult = mult + times
+            elseif name == "Acrobat" then
+                local hands = (G.GAME.current_round and G.GAME.current_round.hands_left) or 0
+                if hands == 1 then mult = mult * 3 end
+            elseif name == "Bootstraps" then
+                local dollars = G.GAME.dollars or 0
+                mult = mult + 2 * math.floor(dollars / 5)
+            elseif name == "Blackboard" then
+                local all_dark = true
+                for _, c in ipairs(all_cards) do
+                    if not played[c] and not c.debuff then
+                        local suit = c.base.suit
+                        if suit ~= "Spades" and suit ~= "Clubs" then
+                            all_dark = false
+                            break
+                        end
+                    end
+                end
+                if all_dark then mult = mult * 3 end
+            elseif name == "Raised Fist" then
+                local lowest = math.huge
+                for _, c in ipairs(all_cards) do
+                    if not played[c] and not c.debuff then
+                        local id = c.base.id
+                        if id < lowest then lowest = id end
+                    end
+                end
+                if lowest < math.huge then
+                    mult = mult + 2 * lowest
+                end
+
+            -- Jokers with accumulated/dynamic values
+            elseif name == "Green Joker" then
+                mult = mult + (ability.mult or 0)
+            elseif name == "Red Card" then
+                mult = mult + (ability.mult or 0)
+            elseif name == "Popcorn" then
+                mult = mult + (ability.mult or 0)
+            elseif name == "Ceremonial Dagger" then
+                mult = mult + (ability.mult or 0)
+            elseif name == "Ride the Bus" then
+                mult = mult + (ability.mult or 0)
+            elseif name == "Obelisk" then
+                mult = mult * (ability.x_mult or 1)
+            elseif name == "Ice Cream" then
+                chips = chips + (ability.extra and ability.extra.chips or 0)
+            elseif name == "Runner" then
+                chips = chips + (ability.chips or 0)
+            elseif name == "Loyalty Card" then
+                -- x4 mult every 4 hands; read current state
+                if ability.remaining == 0 then
+                    mult = mult * (ability.x_mult or 4)
+                end
+            elseif name == "Flash Card" then
+                mult = mult + (ability.mult or 0)
+            elseif name == "Spare Trousers" then
+                mult = mult + (ability.mult or 0)
+            elseif name == "Castle" then
+                chips = chips + (ability.extra and ability.extra.chips or ability.chips or 0)
+            elseif name == "Wee Joker" then
+                chips = chips + (ability.extra and ability.extra.chips or ability.chips or 0)
+            elseif name == "Erosion" then
+                mult = mult + (ability.mult or 0)
+
+            -----------------------------------------------
+            -- Tier 2: Hand-type conditional jokers
+            -----------------------------------------------
+            elseif name == "Jolly Joker" then
+                if contains_pair[hand_name] then mult = mult + 8 end
+            elseif name == "Zany Joker" then
+                if contains_three[hand_name] then mult = mult + 12 end
+            elseif name == "Mad Joker" then
+                if contains_two_pair[hand_name] then mult = mult + 10 end
+            elseif name == "Crazy Joker" then
+                if contains_straight[hand_name] then mult = mult + 12 end
+            elseif name == "Droll Joker" then
+                if contains_flush[hand_name] then mult = mult + 10 end
+            elseif name == "Sly Joker" then
+                if contains_pair[hand_name] then chips = chips + 50 end
+            elseif name == "Wily Joker" then
+                if contains_three[hand_name] then chips = chips + 100 end
+            elseif name == "Clever Joker" then
+                if contains_two_pair[hand_name] then chips = chips + 80 end
+            elseif name == "Devious Joker" then
+                if contains_straight[hand_name] then chips = chips + 100 end
+            elseif name == "Crafty Joker" then
+                if contains_flush[hand_name] then chips = chips + 80 end
+            elseif name == "The Duo" then
+                if contains_pair[hand_name] then mult = mult * 2 end
+            elseif name == "The Trio" then
+                if contains_three[hand_name] then mult = mult * 2 end
+            elseif name == "The Family" then
+                if contains_four[hand_name] then mult = mult * 2 end
+            elseif name == "The Order" then
+                if contains_straight[hand_name] then mult = mult * 2 end
+            elseif name == "The Tribe" then
+                if contains_flush[hand_name] then mult = mult * 2 end
+
+            -----------------------------------------------
+            -- Tier 3: Card-specific conditional jokers
+            -----------------------------------------------
+            elseif name == "Fibonacci" then
+                mult = mult + 8 * ranks.fib
+            elseif name == "Scary Face" then
+                chips = chips + 30 * ranks.face
+            elseif name == "Scholar" then
+                chips = chips + 20 * ranks.ace
+                mult = mult + 4 * ranks.ace
+            elseif name == "Even Steven" then
+                mult = mult + 4 * ranks.even
+            elseif name == "Odd Todd" then
+                chips = chips + 31 * ranks.odd
+            elseif name == "Photograph" then
+                if ranks.face > 0 then mult = mult * 2 end
+            elseif name == "Walkie Talkie" then
+                -- +10 chips and +4 mult per 10 or 4 played
+                for _, card in ipairs(cards) do
+                    if not card.debuff then
+                        local id = card.base.id
+                        if id == 10 or id == 4 then
+                            chips = chips + 10
+                            mult = mult + 4
+                        end
+                    end
+                end
+            elseif name == "Smiley Face" then
+                mult = mult + 5 * ranks.face
+            elseif name == "Golden Joker" then
+                -- $4 at end of round (money, not score) — skip
+            end
+
+            -- Joker edition bonuses
+            local edition = joker.edition
+            if edition then
+                if edition.foil then
+                    chips = chips + 50
+                elseif edition.holo then
+                    mult = mult + 10
+                elseif edition.polychrome then
+                    mult = mult * 1.5
+                end
+            end
+        end
+    end
+
+    return chips, mult
+end
+
 local function score_combo(cards, all_cards)
     local hand_name, _, _ = G.FUNCS.get_poker_hand_info(cards)
     if not hand_name then return nil, 0 end
@@ -79,6 +327,9 @@ local function score_combo(cards, all_cards)
             end
         end
     end
+
+    -- apply joker bonuses
+    chips, mult = apply_jokers(chips, mult, cards, hand_name, all_cards, played)
 
     return hand_name, chips * mult
 end
