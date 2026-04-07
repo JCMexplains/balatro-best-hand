@@ -76,12 +76,12 @@ local function count_ranks(cards)
     return { face = face, ace = ace, fib = fib, even = even, odd = odd }
 end
 
-local function apply_jokers(chips, mult, cards, hand_name, all_cards, played)
+local function apply_jokers(chips, mult, scoring_cards, hand_name, all_cards, played, num_played)
     if not G.jokers or not G.jokers.cards then return chips, mult end
 
-    local suits = count_suits(cards)
-    local ranks = count_ranks(cards)
-    local num_played = #cards
+    -- per-card joker effects only fire on scoring cards, not kickers
+    local suits = count_suits(scoring_cards)
+    local ranks = count_ranks(scoring_cards)
 
     for _, joker in ipairs(G.jokers.cards) do
         if not joker.debuff then
@@ -230,8 +230,8 @@ local function apply_jokers(chips, mult, cards, hand_name, all_cards, played)
             elseif name == "Photograph" then
                 if ranks.face > 0 then mult = mult * 2 end
             elseif name == "Walkie Talkie" then
-                -- +10 chips and +4 mult per 10 or 4 played
-                for _, card in ipairs(cards) do
+                -- +10 chips and +4 mult per 10 or 4 scored
+                for _, card in ipairs(scoring_cards) do
                     if not card.debuff then
                         local id = card.base.id
                         if id == 10 or id == 4 then
@@ -414,8 +414,8 @@ local function score_combo(cards, all_cards)
         end
     end
 
-    -- apply joker bonuses
-    chips, mult = apply_jokers(chips, mult, cards, hand_name, all_cards, played)
+    -- apply joker bonuses (pass scoring cards for per-card effects)
+    chips, mult = apply_jokers(chips, mult, scoring, hand_name, all_cards, played, #cards)
 
     return hand_name, chips * mult, scoring
 end
@@ -444,6 +444,20 @@ local function cards_label(cards)
     return table.concat(labels, ", ")
 end
 
+local function cards_label_exclude(cards, exclude)
+    local exc_set = {}
+    for _, card in ipairs(exclude) do
+        exc_set[card] = true
+    end
+    local labels = {}
+    for _, card in ipairs(cards) do
+        if not exc_set[card] then
+            labels[#labels + 1] = card_label(card)
+        end
+    end
+    return table.concat(labels, ", ")
+end
+
 local function analyze_hand()
     if not G or not G.hand or not G.hand.cards then return nil end
     local cards = G.hand.cards
@@ -454,7 +468,7 @@ local function analyze_hand()
             for _, combo in ipairs(combinations(cards, size)) do
                 local name, score, scoring = score_combo(combo, cards)
                 if name then
-                    best[#best + 1] = { name = name, score = score, cards = scoring }
+                    best[#best + 1] = { name = name, score = score, cards = scoring, play = combo }
                 end
             end
         end
@@ -479,7 +493,11 @@ SMODS.Keybind({
         if not results or #results == 0 then return end
         local lines = {"", "-- Best Hands --"}
         for i, r in ipairs(results) do
-            lines[#lines + 1] = i .. ". " .. r.name .. " (" .. cards_label(r.cards) .. ")     ~ " .. math.floor(r.score) .. " points"
+            local play_str = cards_label(r.play)
+            if #r.play > #r.cards then
+                play_str = cards_label(r.cards) .. " + " .. cards_label_exclude(r.play, r.cards)
+            end
+            lines[#lines + 1] = i .. ". " .. r.name .. " (" .. play_str .. ")     ~ " .. math.floor(r.score) .. " points"
         end
         for _, line in ipairs(lines) do print(line) end
     end
@@ -502,6 +520,11 @@ SMODS.Keybind({
             end
         end
         dump(card, "card", 0)
+        if G.jokers and G.jokers.cards then
+            for i, joker in ipairs(G.jokers.cards) do
+                dump(joker, "joker[" .. i .. "]", 0)
+            end
+        end
         table.sort(out)
         local path = love.filesystem.getSaveDirectory() .. "/card_dump.txt"
         local f = io.open(path, "w")
