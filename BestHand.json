@@ -1,0 +1,9 @@
+{
+    "id": "BestHand",
+    "name": "Best Hand Advisor",
+    "author": ["you"],
+    "description": "Recommends the highest-scoring hand",
+    "prefix": "bh",
+    "main_file": "BestHand.lua",
+    "version": "0.1.0"
+}
