@@ -76,12 +76,12 @@ local function count_ranks(cards)
     return { face = face, ace = ace, fib = fib, even = even, odd = odd }
 end
 
-local function apply_jokers(chips, mult, cards, hand_name, all_cards, played)
+local function apply_jokers(chips, mult, scoring_cards, hand_name, all_cards, played, num_played)
     if not G.jokers or not G.jokers.cards then return chips, mult end
 
-    local suits = count_suits(cards)
-    local ranks = count_ranks(cards)
-    local num_played = #cards
+    -- per-card joker effects only fire on scoring cards, not kickers
+    local suits = count_suits(scoring_cards)
+    local ranks = count_ranks(scoring_cards)
 
     for _, joker in ipairs(G.jokers.cards) do
         if not joker.debuff then
@@ -230,8 +230,8 @@ local function apply_jokers(chips, mult, cards, hand_name, all_cards, played)
             elseif name == "Photograph" then
                 if ranks.face > 0 then mult = mult * 2 end
             elseif name == "Walkie Talkie" then
-                -- +10 chips and +4 mult per 10 or 4 played
-                for _, card in ipairs(cards) do
+                -- +10 chips and +4 mult per 10 or 4 scored
+                for _, card in ipairs(scoring_cards) do
                     if not card.debuff then
                         local id = card.base.id
                         if id == 10 or id == 4 then
@@ -414,8 +414,8 @@ local function score_combo(cards, all_cards)
         end
     end
 
-    -- apply joker bonuses
-    chips, mult = apply_jokers(chips, mult, cards, hand_name, all_cards, played)
+    -- apply joker bonuses (pass scoring cards for per-card effects)
+    chips, mult = apply_jokers(chips, mult, scoring, hand_name, all_cards, played, #cards)
 
     return hand_name, chips * mult, scoring
 end
