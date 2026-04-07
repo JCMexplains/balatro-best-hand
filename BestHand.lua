@@ -264,7 +264,7 @@ local function apply_jokers(chips, mult, cards, hand_name, all_cards, played)
 end
 
 local function score_combo(cards, all_cards)
-    local hand_name, _, _ = G.FUNCS.get_poker_hand_info(cards)
+    local hand_name, _, scoring = G.FUNCS.get_poker_hand_info(cards)
     if not hand_name then return nil, 0 end
     local hand_info = G.GAME.hands[hand_name]
     if not hand_info then return nil, 0 end
@@ -278,9 +278,22 @@ local function score_combo(cards, all_cards)
         played[card] = true
     end
 
+    -- build set of scoring cards (cards that form the hand)
+    local scoring_set = {}
+    if scoring then
+        for _, card in ipairs(scoring) do
+            scoring_set[card] = true
+        end
+    else
+        -- fallback: treat all played cards as scoring
+        for _, card in ipairs(cards) do
+            scoring_set[card] = true
+        end
+    end
+
     for _, card in ipairs(cards) do
         -- skip debuffed cards entirely
-        if not card.debuff then
+        if not card.debuff and scoring_set[card] then
             -- base chip value from rank
             chips = chips + (card.base.nominal or 0)
 
