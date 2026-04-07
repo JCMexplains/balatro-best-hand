@@ -263,8 +263,87 @@ local function apply_jokers(chips, mult, cards, hand_name, all_cards, played)
     return chips, mult
 end
 
+-- Determine which cards actually score for a given hand type.
+-- Kicker cards (e.g. 5th card in Two Pair) do NOT contribute chips.
+local function get_scoring_cards(cards, hand_name)
+    -- Hands where all cards score
+    if hand_name == "Flush" or hand_name == "Straight" or hand_name == "Straight Flush"
+        or hand_name == "Royal Flush" or hand_name == "Full House"
+        or hand_name == "Flush House" or hand_name == "Flush Five"
+        or hand_name == "Five of a Kind" then
+        return cards
+    end
+
+    -- Group cards by rank id
+    local by_rank = {}
+    for _, card in ipairs(cards) do
+        local id = card.base.id
+        if not by_rank[id] then by_rank[id] = {} end
+        by_rank[id][#by_rank[id] + 1] = card
+    end
+
+    -- Sort groups by size descending, then by rank descending for ties
+    local groups = {}
+    for id, group in pairs(by_rank) do
+        groups[#groups + 1] = { id = id, cards = group, count = #group }
+    end
+    table.sort(groups, function(a, b)
+        if a.count ~= b.count then return a.count > b.count end
+        return a.id > b.id
+    end)
+
+    local scoring = {}
+
+    if hand_name == "Four of a Kind" then
+        for _, g in ipairs(groups) do
+            if g.count >= 4 then
+                for i = 1, 4 do scoring[#scoring + 1] = g.cards[i] end
+                break
+            end
+        end
+    elseif hand_name == "Three of a Kind" then
+        for _, g in ipairs(groups) do
+            if g.count >= 3 then
+                for i = 1, 3 do scoring[#scoring + 1] = g.cards[i] end
+                break
+            end
+        end
+    elseif hand_name == "Two Pair" then
+        local pairs_found = 0
+        for _, g in ipairs(groups) do
+            if g.count >= 2 and pairs_found < 2 then
+                scoring[#scoring + 1] = g.cards[1]
+                scoring[#scoring + 1] = g.cards[2]
+                pairs_found = pairs_found + 1
+            end
+        end
+    elseif hand_name == "Pair" then
+        for _, g in ipairs(groups) do
+            if g.count >= 2 then
+                scoring[#scoring + 1] = g.cards[1]
+                scoring[#scoring + 1] = g.cards[2]
+                break
+            end
+        end
+    elseif hand_name == "High Card" then
+        -- highest single card scores
+        local best = nil
+        for _, card in ipairs(cards) do
+            if not best or card.base.id > best.base.id then
+                best = card
+            end
+        end
+        if best then scoring[#scoring + 1] = best end
+    else
+        -- unknown hand type: treat all as scoring
+        return cards
+    end
+
+    return scoring
+end
+
 local function score_combo(cards, all_cards)
-    local hand_name, _, scoring = G.FUNCS.get_poker_hand_info(cards)
+    local hand_name, _, _ = G.FUNCS.get_poker_hand_info(cards)
     if not hand_name then return nil, 0 end
     local hand_info = G.GAME.hands[hand_name]
     if not hand_info then return nil, 0 end
@@ -278,21 +357,15 @@ local function score_combo(cards, all_cards)
         played[card] = true
     end
 
-    -- build set of scoring cards (cards that form the hand)
+    -- identify which cards actually form the hand (not kickers)
+    local scoring = get_scoring_cards(cards, hand_name)
     local scoring_set = {}
-    if scoring then
-        for _, card in ipairs(scoring) do
-            scoring_set[card] = true
-        end
-    else
-        -- fallback: treat all played cards as scoring
-        for _, card in ipairs(cards) do
-            scoring_set[card] = true
-        end
+    for _, card in ipairs(scoring) do
+        scoring_set[card] = true
     end
 
     for _, card in ipairs(cards) do
-        -- skip debuffed cards entirely
+        -- skip debuffed and non-scoring (kicker) cards
         if not card.debuff and scoring_set[card] then
             -- base chip value from rank
             chips = chips + (card.base.nominal or 0)
