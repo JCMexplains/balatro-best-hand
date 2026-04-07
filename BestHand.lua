@@ -473,7 +473,10 @@ local function analyze_hand()
             end
         end
     end
-    table.sort(best, function(a, b) return a.score > b.score end)
+    table.sort(best, function(a, b)
+        if a.score ~= b.score then return a.score > b.score end
+        return #a.play < #b.play
+    end)
     local seen = {}
     local top = {}
     for _, entry in ipairs(best) do
