@@ -92,6 +92,50 @@ local function count_suits(cards)
 end
 
 -------------------------------------------------------------------------
+-- Identify which cards participate in a flush pattern.
+-- With Four Fingers only 4 cards need to share a suit, so a 5-card combo
+-- may contain a kicker that doesn't match.  Returns the matching subset.
+-------------------------------------------------------------------------
+local function get_flush_members(cards)
+    local suits = {"Hearts", "Diamonds", "Clubs", "Spades"}
+    local best_suit, best_count = nil, 0
+    for _, suit in ipairs(suits) do
+        local count = 0
+        for _, card in ipairs(cards) do
+            if suit_matches(card, suit) then count = count + 1 end
+        end
+        if count > best_count then best_suit, best_count = suit, count end
+    end
+    if best_count >= #cards then return cards end
+    local result = {}
+    for _, card in ipairs(cards) do
+        if suit_matches(card, best_suit) then result[#result + 1] = card end
+    end
+    return result
+end
+
+-------------------------------------------------------------------------
+-- Identify which cards participate in a straight pattern.
+-- Uses Balatro's hand detection so ace wrapping and Shortcut are handled.
+-- Tries removing one card at a time; if the remainder is still a straight
+-- the removed card is the kicker.
+-------------------------------------------------------------------------
+local function get_straight_members(cards)
+    if #cards <= 1 then return cards end
+    for i = 1, #cards do
+        local subset = {}
+        for j, c in ipairs(cards) do
+            if j ~= i then subset[#subset + 1] = c end
+        end
+        local name = G.FUNCS.get_poker_hand_info(subset)
+        if name and contains_straight[name] then
+            return subset
+        end
+    end
+    return cards
+end
+
+-------------------------------------------------------------------------
 -- get_triggers: total number of times a card fires (always ≥ 1).
 -- Retrigger sources stack MULTIPLICATIVELY in Balatro:
 --   e.g. Red Seal (×2) + Hack (×2) on a 3 → 4 total triggers.
@@ -165,12 +209,41 @@ end
 -- Returns cards in their original hand order (left to right).
 -------------------------------------------------------------------------
 local function get_scoring_cards(cards, hand_name)
-    -- Hands where every played card scores
-    if hand_name == "Flush" or hand_name == "Straight"
-        or hand_name == "Straight Flush" or hand_name == "Royal Flush"
-        or hand_name == "Full House" or hand_name == "Flush House"
+    -- Hands where every played card always participates
+    if hand_name == "Full House" or hand_name == "Flush House"
         or hand_name == "Flush Five" or hand_name == "Five of a Kind" then
         return cards
+    end
+
+    -- Flush / Straight hands: with Four Fingers a combo may contain a
+    -- kicker card that doesn't participate in the pattern.
+    if hand_name == "Flush" or hand_name == "Straight"
+        or hand_name == "Straight Flush" or hand_name == "Royal Flush" then
+        local members
+        if hand_name == "Flush" then
+            members = get_flush_members(cards)
+        elseif hand_name == "Straight" then
+            members = get_straight_members(cards)
+        else -- Straight Flush / Royal Flush: check flush first, then straight
+            members = get_flush_members(cards)
+            if #members >= #cards then
+                members = get_straight_members(cards)
+            end
+        end
+        if #members >= #cards then return cards end
+        -- Build scoring set from participating cards + Stone Card kickers
+        local scoring_set = {}
+        for _, c in ipairs(members) do scoring_set[c] = true end
+        for _, c in ipairs(cards) do
+            if c.ability and c.ability.name == "Stone Card" then
+                scoring_set[c] = true
+            end
+        end
+        local result = {}
+        for _, c in ipairs(cards) do
+            if scoring_set[c] then result[#result + 1] = c end
+        end
+        return result
     end
 
     -- Splash joker: all played cards score regardless of hand type
