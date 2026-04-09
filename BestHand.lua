@@ -695,6 +695,13 @@ local function eval_flat_jokers(resolved, chips, mult, ctx)
             -- +mult equal to total sell value of other jokers
             mult = mult + (ability.mult or 0)
 
+        elseif name == "Card Sharp" then
+            -- x3 mult if this hand type has already been played this round
+            local h = G.GAME.hands[ctx.hand_name]
+            if h and (h.played_this_round or 0) > 0 then
+                mult = mult * (ability.extra and ability.extra.Xmult or 3)
+            end
+
         -------------------------------------------
         -- Hand-type conditional jokers
         -------------------------------------------
