@@ -1,3 +1,18 @@
+-------------------------------------------------------------------------
+-- BestHand.lua — Balatro mod that analyzes your hand and recommends
+-- the highest-scoring play. Press F2 to evaluate; F3 to dump card data.
+--
+-- Scoring follows Balatro's evaluation order:
+--   Phase 1: Each scoring card fires L→R (with retriggers):
+--            base chips → enhancement → edition → per-card jokers
+--   Phase 2: Flat joker effects fire L→R (with Blueprint/Brainstorm)
+--   Phase 3: Held-in-hand effects (Steel Card, Baron, Shoot the Moon)
+--            fire per held card, with Mime/Red Seal retriggers
+-------------------------------------------------------------------------
+
+-------------------------------------------------------------------------
+-- Utility: generate all k-element subsets of a list
+-------------------------------------------------------------------------
 local function combinations(list, k)
     local result = {}
     local function helper(start, combo)
@@ -15,7 +30,11 @@ local function combinations(list, k)
     return result
 end
 
--- Hand-type containment tables for joker conditions
+-------------------------------------------------------------------------
+-- Hand-type containment tables
+-- A Full House "contains" both a Pair and Three of a Kind, etc.
+-- Used by conditional jokers like Jolly Joker ("if hand contains a Pair").
+-------------------------------------------------------------------------
 local contains_pair = {
     ["Pair"] = true, ["Two Pair"] = true, ["Three of a Kind"] = true,
     ["Full House"] = true, ["Four of a Kind"] = true, ["Five of a Kind"] = true,
@@ -40,241 +59,131 @@ local contains_two_pair = {
     ["Two Pair"] = true, ["Full House"] = true, ["Flush House"] = true,
 }
 
+-- Fibonacci-rank IDs for the Fibonacci joker (Ace = id 14 counts)
 local fib_ranks = { [2] = true, [3] = true, [5] = true, [8] = true, [14] = true }
 
+-------------------------------------------------------------------------
+-- suit_matches: does this card count as `target_suit`?
+-- Wild Cards match every suit.
+-------------------------------------------------------------------------
+local function suit_matches(card, target_suit)
+    if card.ability and card.ability.name == "Wild Card" then return true end
+    return card.base.suit == target_suit
+end
+
+-------------------------------------------------------------------------
+-- Count how many scoring cards match each suit (aggregate).
+-- Wild Cards add +1 to every suit.
+-- Used by flat jokers like Flower Pot that check aggregate suit presence.
+-------------------------------------------------------------------------
 local function count_suits(cards)
     local counts = { Hearts = 0, Diamonds = 0, Clubs = 0, Spades = 0 }
     for _, card in ipairs(cards) do
         if not card.debuff then
             if card.ability and card.ability.name == "Wild Card" then
-                for s, _ in pairs(counts) do
-                    counts[s] = counts[s] + 1
-                end
+                for s in pairs(counts) do counts[s] = counts[s] + 1 end
             else
                 local suit = card.base.suit
-                if counts[suit] then
-                    counts[suit] = counts[suit] + 1
-                end
+                if counts[suit] then counts[suit] = counts[suit] + 1 end
             end
         end
     end
     return counts
 end
 
-local function count_ranks(cards)
-    local face, ace, fib, even, odd = 0, 0, 0, 0, 0
-    for _, card in ipairs(cards) do
-        if not card.debuff then
-            local id = card.base.id
-            if id >= 11 and id <= 13 then face = face + 1 end
-            if id == 14 then ace = ace + 1 end
-            if fib_ranks[id] then fib = fib + 1 end
-            if id >= 2 and id <= 10 and id % 2 == 0 then even = even + 1 end
-            if id == 14 or (id >= 1 and id <= 10 and id % 2 == 1) then odd = odd + 1 end
-        end
+-------------------------------------------------------------------------
+-- get_triggers: total number of times a card fires (always ≥ 1).
+-- Retrigger sources stack MULTIPLICATIVELY in Balatro:
+--   e.g. Red Seal (×2) + Hack (×2) on a 3 → 4 total triggers.
+-- `card_index` is the 1-based position in the scoring card list.
+-- `is_held` selects held-in-hand retrigger sources (Mime, Red Seal).
+-------------------------------------------------------------------------
+local function get_triggers(card, card_index, is_held)
+    local triggers = 1 -- base: every card fires at least once
+
+    -- Red Seal doubles triggers (works on both played and held cards)
+    if card.seal == "Red" then
+        triggers = triggers * 2
     end
-    return { face = face, ace = ace, fib = fib, even = even, odd = odd }
-end
 
-local function apply_jokers(chips, mult, scoring_cards, hand_name, all_cards, played, num_played)
-    if not G.jokers or not G.jokers.cards then return chips, mult end
+    if not G.jokers or not G.jokers.cards then return triggers end
 
-    -- per-card joker effects only fire on scoring cards, not kickers
-    local suits = count_suits(scoring_cards)
-    local ranks = count_ranks(scoring_cards)
-
-    for _, joker in ipairs(G.jokers.cards) do
-        if not joker.debuff then
-            local ability = joker.ability or {}
-            local name = ability.name or ""
-
-            -----------------------------------------------
-            -- Tier 1: Always-apply and game-state jokers
-            -----------------------------------------------
-            if name == "Joker" then
-                mult = mult + 4
-            elseif name == "Greedy Joker" then
-                mult = mult + 3 * suits.Diamonds
-            elseif name == "Lusty Joker" then
-                mult = mult + 3 * suits.Hearts
-            elseif name == "Wrathful Joker" then
-                mult = mult + 3 * suits.Spades
-            elseif name == "Gluttonous Joker" then
-                mult = mult + 3 * suits.Clubs
-            elseif name == "Half Joker" then
-                if num_played <= 3 then mult = mult + 20 end
-            elseif name == "Banner" then
-                local discards = (G.GAME.current_round and G.GAME.current_round.discards_left) or 0
-                chips = chips + 30 * discards
-            elseif name == "Mystic Summit" then
-                local discards = (G.GAME.current_round and G.GAME.current_round.discards_left) or 0
-                if discards == 0 then mult = mult + 15 end
-            elseif name == "Abstract Joker" then
-                mult = mult + 3 * #G.jokers.cards
-            elseif name == "Stuntman" then
-                chips = chips + 250
-            elseif name == "Supernova" then
-                local times = (G.GAME.hands[hand_name] and G.GAME.hands[hand_name].played) or 0
-                mult = mult + times
-            elseif name == "Acrobat" then
-                local hands = (G.GAME.current_round and G.GAME.current_round.hands_left) or 0
-                if hands == 1 then mult = mult * 3 end
-            elseif name == "Bootstraps" then
-                local dollars = G.GAME.dollars or 0
-                mult = mult + 2 * math.floor(dollars / 5)
-            elseif name == "Blackboard" then
-                local all_dark = true
-                for _, c in ipairs(all_cards) do
-                    if not played[c] and not c.debuff then
-                        local suit = c.base.suit
-                        if suit ~= "Spades" and suit ~= "Clubs" then
-                            all_dark = false
-                            break
-                        end
+    if not is_held then
+        -- Retrigger jokers for played/scoring cards
+        for _, joker in ipairs(G.jokers.cards) do
+            if not joker.debuff then
+                local name = (joker.ability and joker.ability.name) or ""
+                if name == "Hack" then
+                    -- Retrigger cards ranked 2, 3, 4, or 5
+                    local id = card.base.id
+                    if id >= 2 and id <= 5 then triggers = triggers * 2 end
+                elseif name == "Sock and Buskin" then
+                    -- Retrigger face cards (J=11, Q=12, K=13)
+                    if card.base.id >= 11 and card.base.id <= 13 then
+                        triggers = triggers * 2
                     end
+                elseif name == "Hanging Chad" then
+                    -- The first scoring card fires 3 total times (+2 retriggers)
+                    if card_index == 1 then triggers = triggers * 3 end
+                elseif name == "Dusk" then
+                    -- Retrigger all cards on the final hand of the round
+                    local hands_left = (G.GAME.current_round
+                        and G.GAME.current_round.hands_left) or 0
+                    if hands_left == 1 then triggers = triggers * 2 end
+                elseif name == "Seltzer" then
+                    -- Retrigger all scored cards (temporary consumable effect)
+                    triggers = triggers * 2
                 end
-                if all_dark then mult = mult * 3 end
-            elseif name == "Raised Fist" then
-                local lowest = math.huge
-                for _, c in ipairs(all_cards) do
-                    if not played[c] and not c.debuff then
-                        local id = c.base.id
-                        if id < lowest then lowest = id end
-                    end
-                end
-                if lowest < math.huge then
-                    mult = mult + 2 * lowest
-                end
-
-            -- Jokers with accumulated/dynamic values
-            elseif name == "Green Joker" then
-                mult = mult + (ability.mult or 0)
-            elseif name == "Red Card" then
-                mult = mult + (ability.mult or 0)
-            elseif name == "Popcorn" then
-                mult = mult + (ability.mult or 0)
-            elseif name == "Ceremonial Dagger" then
-                mult = mult + (ability.mult or 0)
-            elseif name == "Ride the Bus" then
-                mult = mult + (ability.mult or 0)
-            elseif name == "Obelisk" then
-                mult = mult * (ability.x_mult or 1)
-            elseif name == "Ice Cream" then
-                chips = chips + (ability.extra and ability.extra.chips or 0)
-            elseif name == "Runner" then
-                chips = chips + (ability.chips or 0)
-            elseif name == "Loyalty Card" then
-                -- x4 mult every 4 hands; read current state
-                if ability.remaining == 0 then
-                    mult = mult * (ability.x_mult or 4)
-                end
-            elseif name == "Flash Card" then
-                mult = mult + (ability.mult or 0)
-            elseif name == "Spare Trousers" then
-                mult = mult + (ability.mult or 0)
-            elseif name == "Castle" then
-                chips = chips + (ability.extra and ability.extra.chips or ability.chips or 0)
-            elseif name == "Wee Joker" then
-                chips = chips + (ability.extra and ability.extra.chips or ability.chips or 0)
-            elseif name == "Erosion" then
-                mult = mult + (ability.mult or 0)
-
-            -----------------------------------------------
-            -- Tier 2: Hand-type conditional jokers
-            -----------------------------------------------
-            elseif name == "Jolly Joker" then
-                if contains_pair[hand_name] then mult = mult + 8 end
-            elseif name == "Zany Joker" then
-                if contains_three[hand_name] then mult = mult + 12 end
-            elseif name == "Mad Joker" then
-                if contains_two_pair[hand_name] then mult = mult + 10 end
-            elseif name == "Crazy Joker" then
-                if contains_straight[hand_name] then mult = mult + 12 end
-            elseif name == "Droll Joker" then
-                if contains_flush[hand_name] then mult = mult + 10 end
-            elseif name == "Sly Joker" then
-                if contains_pair[hand_name] then chips = chips + 50 end
-            elseif name == "Wily Joker" then
-                if contains_three[hand_name] then chips = chips + 100 end
-            elseif name == "Clever Joker" then
-                if contains_two_pair[hand_name] then chips = chips + 80 end
-            elseif name == "Devious Joker" then
-                if contains_straight[hand_name] then chips = chips + 100 end
-            elseif name == "Crafty Joker" then
-                if contains_flush[hand_name] then chips = chips + 80 end
-            elseif name == "The Duo" then
-                if contains_pair[hand_name] then mult = mult * 2 end
-            elseif name == "The Trio" then
-                if contains_three[hand_name] then mult = mult * 2 end
-            elseif name == "The Family" then
-                if contains_four[hand_name] then mult = mult * 2 end
-            elseif name == "The Order" then
-                if contains_straight[hand_name] then mult = mult * 2 end
-            elseif name == "The Tribe" then
-                if contains_flush[hand_name] then mult = mult * 2 end
-
-            -----------------------------------------------
-            -- Tier 3: Card-specific conditional jokers
-            -----------------------------------------------
-            elseif name == "Fibonacci" then
-                mult = mult + 8 * ranks.fib
-            elseif name == "Scary Face" then
-                chips = chips + 30 * ranks.face
-            elseif name == "Scholar" then
-                chips = chips + 20 * ranks.ace
-                mult = mult + 4 * ranks.ace
-            elseif name == "Even Steven" then
-                mult = mult + 4 * ranks.even
-            elseif name == "Odd Todd" then
-                chips = chips + 31 * ranks.odd
-            elseif name == "Photograph" then
-                if ranks.face > 0 then mult = mult * 2 end
-            elseif name == "Walkie Talkie" then
-                -- +10 chips and +4 mult per 10 or 4 scored
-                for _, card in ipairs(scoring_cards) do
-                    if not card.debuff then
-                        local id = card.base.id
-                        if id == 10 or id == 4 then
-                            chips = chips + 10
-                            mult = mult + 4
-                        end
-                    end
-                end
-            elseif name == "Smiley Face" then
-                mult = mult + 5 * ranks.face
-            elseif name == "Golden Joker" then
-                -- $4 at end of round (money, not score) — skip
             end
-
-            -- Joker edition bonuses
-            local edition = joker.edition
-            if edition then
-                if edition.foil then
-                    chips = chips + 50
-                elseif edition.holo then
-                    mult = mult + 10
-                elseif edition.polychrome then
-                    mult = mult * 1.5
+        end
+    else
+        -- Retrigger jokers for held-in-hand cards
+        for _, joker in ipairs(G.jokers.cards) do
+            if not joker.debuff then
+                if (joker.ability and joker.ability.name) == "Mime" then
+                    triggers = triggers * 2
                 end
             end
         end
     end
 
-    return chips, mult
+    return triggers
 end
 
+-------------------------------------------------------------------------
+-- Check if The Flint boss blind is active (halves base chips and mult).
+-------------------------------------------------------------------------
+local function is_flint_active()
+    return G.GAME and G.GAME.blind and G.GAME.blind.name == "The Flint"
+end
+
+-------------------------------------------------------------------------
 -- Determine which cards actually score for a given hand type.
--- Kicker cards (e.g. 5th card in Two Pair) do NOT contribute chips.
+-- Kicker cards (e.g. the 5th card in Two Pair) do NOT score,
+-- UNLESS they have Stone Card enhancement (Stone Cards always score).
+-- When the Splash joker is present, ALL played cards score.
+-- Returns cards in their original hand order (left to right).
+-------------------------------------------------------------------------
 local function get_scoring_cards(cards, hand_name)
-    -- Hands where all cards score
-    if hand_name == "Flush" or hand_name == "Straight" or hand_name == "Straight Flush"
-        or hand_name == "Royal Flush" or hand_name == "Full House"
-        or hand_name == "Flush House" or hand_name == "Flush Five"
-        or hand_name == "Five of a Kind" then
+    -- Hands where every played card scores
+    if hand_name == "Flush" or hand_name == "Straight"
+        or hand_name == "Straight Flush" or hand_name == "Royal Flush"
+        or hand_name == "Full House" or hand_name == "Flush House"
+        or hand_name == "Flush Five" or hand_name == "Five of a Kind" then
         return cards
     end
 
-    -- Group cards by rank id
+    -- Splash joker: all played cards score regardless of hand type
+    if G.jokers and G.jokers.cards then
+        for _, joker in ipairs(G.jokers.cards) do
+            if not joker.debuff and joker.ability
+                and joker.ability.name == "Splash" then
+                return cards
+            end
+        end
+    end
+
+    -- Group cards by rank id to identify the hand's core groups
     local by_rank = {}
     for _, card in ipairs(cards) do
         local id = card.base.id
@@ -282,7 +191,7 @@ local function get_scoring_cards(cards, hand_name)
         by_rank[id][#by_rank[id] + 1] = card
     end
 
-    -- Sort groups by size descending, then by rank descending for ties
+    -- Sort groups: largest first, highest rank breaks ties
     local groups = {}
     for id, group in pairs(by_rank) do
         groups[#groups + 1] = { id = id, cards = group, count = #group }
@@ -292,19 +201,20 @@ local function get_scoring_cards(cards, hand_name)
         return a.id > b.id
     end)
 
-    local scoring = {}
+    -- Build a set of cards that form the hand's core pattern
+    local scoring_set = {}
 
     if hand_name == "Four of a Kind" then
         for _, g in ipairs(groups) do
             if g.count >= 4 then
-                for i = 1, 4 do scoring[#scoring + 1] = g.cards[i] end
+                for i = 1, 4 do scoring_set[g.cards[i]] = true end
                 break
             end
         end
     elseif hand_name == "Three of a Kind" then
         for _, g in ipairs(groups) do
             if g.count >= 3 then
-                for i = 1, 3 do scoring[#scoring + 1] = g.cards[i] end
+                for i = 1, 3 do scoring_set[g.cards[i]] = true end
                 break
             end
         end
@@ -312,37 +222,465 @@ local function get_scoring_cards(cards, hand_name)
         local pairs_found = 0
         for _, g in ipairs(groups) do
             if g.count >= 2 and pairs_found < 2 then
-                scoring[#scoring + 1] = g.cards[1]
-                scoring[#scoring + 1] = g.cards[2]
+                scoring_set[g.cards[1]] = true
+                scoring_set[g.cards[2]] = true
                 pairs_found = pairs_found + 1
             end
         end
     elseif hand_name == "Pair" then
         for _, g in ipairs(groups) do
             if g.count >= 2 then
-                scoring[#scoring + 1] = g.cards[1]
-                scoring[#scoring + 1] = g.cards[2]
+                scoring_set[g.cards[1]] = true
+                scoring_set[g.cards[2]] = true
                 break
             end
         end
     elseif hand_name == "High Card" then
-        -- highest single card scores
+        -- Only the highest-ranked card scores
         local best = nil
         for _, card in ipairs(cards) do
-            if not best or card.base.id > best.base.id then
-                best = card
-            end
+            if not best or card.base.id > best.base.id then best = card end
         end
-        if best then scoring[#scoring + 1] = best end
+        if best then scoring_set[best] = true end
     else
-        -- unknown hand type: treat all as scoring
-        return cards
+        -- Unknown hand type: treat all as scoring
+        for _, card in ipairs(cards) do scoring_set[card] = true end
     end
 
-    return scoring
+    -- Stone Cards always score, even as kickers — they contribute +50 chips
+    for _, card in ipairs(cards) do
+        if card.ability and card.ability.name == "Stone Card" then
+            scoring_set[card] = true
+        end
+    end
+
+    -- Return scoring cards in original hand order (left to right),
+    -- which is important for Hanging Chad and Photograph
+    local result = {}
+    for _, card in ipairs(cards) do
+        if scoring_set[card] then result[#result + 1] = card end
+    end
+    return result
 end
 
+-------------------------------------------------------------------------
+-- Resolve Blueprint and Brainstorm into their effective joker targets.
+-- Returns a list of {ability, name, edition} entries in slot order.
+-- Blueprint copies the joker to its right (chained Blueprints walk
+-- rightward until a real joker is found). Brainstorm copies the
+-- leftmost joker.
+-------------------------------------------------------------------------
+local function resolve_jokers()
+    if not G.jokers or not G.jokers.cards then return {} end
+    local jokers = G.jokers.cards
+    local resolved = {}
+
+    for i, joker in ipairs(jokers) do
+        if not joker.debuff then
+            local ability = joker.ability or {}
+            local name = ability.name or ""
+
+            if name == "Blueprint" then
+                -- Walk rightward past chained Blueprints to find the real target
+                local target_ability = nil
+                for k = i + 1, #jokers do
+                    local t = jokers[k]
+                    if not t.debuff and t.ability then
+                        local tname = t.ability.name or ""
+                        if tname == "Brainstorm" then
+                            -- Brainstorm copies leftmost; resolve that instead
+                            local left = jokers[1]
+                            if left and left ~= t and not left.debuff
+                                and left.ability
+                                and left.ability.name ~= "Blueprint"
+                                and left.ability.name ~= "Brainstorm" then
+                                target_ability = left.ability
+                            end
+                            break
+                        elseif tname ~= "Blueprint" then
+                            target_ability = t.ability
+                            break
+                        end
+                        -- Another Blueprint: keep walking right
+                    end
+                end
+                if target_ability then
+                    resolved[#resolved + 1] = {
+                        ability = target_ability,
+                        name = target_ability.name or "",
+                        edition = joker.edition, -- Blueprint uses its OWN edition
+                    }
+                end
+
+            elseif name == "Brainstorm" then
+                -- Copy the leftmost joker (skip self if Brainstorm is first)
+                local target = jokers[1]
+                if target and target ~= joker and not target.debuff
+                    and target.ability then
+                    local tname = target.ability.name or ""
+                    if tname ~= "Blueprint" and tname ~= "Brainstorm" then
+                        resolved[#resolved + 1] = {
+                            ability = target.ability,
+                            name = tname,
+                            edition = joker.edition,
+                        }
+                    end
+                end
+
+            else
+                resolved[#resolved + 1] = {
+                    ability = ability,
+                    name = name,
+                    edition = joker.edition,
+                }
+            end
+        end
+    end
+
+    return resolved
+end
+
+-------------------------------------------------------------------------
+-- Phase 1 helper: per-card joker effects for a single scoring card.
+-- Called once per trigger (base + retriggers), in joker slot order.
+-- These jokers give bonuses based on the individual card's rank/suit.
+--
+-- `state` carries cross-card flags:
+--   state.photo_used — prevents Photograph from firing on subsequent
+--                      face cards (only the first face card gets x2).
+-------------------------------------------------------------------------
+local function eval_per_card_jokers(card, resolved, chips, mult, state)
+    local id = card.base.id
+    local is_face = id >= 11 and id <= 13
+    local is_ace = id == 14
+    local is_fib = fib_ranks[id] or false
+    local is_even = id >= 2 and id <= 10 and id % 2 == 0
+    local is_odd = is_ace or (id >= 1 and id <= 10 and id % 2 == 1)
+
+    for _, j in ipairs(resolved) do
+        local name = j.name
+
+        -- Suit-mult jokers: +3 mult per matching suit in scoring cards
+        if name == "Greedy Joker" then
+            if suit_matches(card, "Diamonds") then mult = mult + 3 end
+        elseif name == "Lusty Joker" then
+            if suit_matches(card, "Hearts") then mult = mult + 3 end
+        elseif name == "Wrathful Joker" then
+            if suit_matches(card, "Spades") then mult = mult + 3 end
+        elseif name == "Gluttonous Joker" then
+            if suit_matches(card, "Clubs") then mult = mult + 3 end
+
+        -- Fibonacci: +8 mult for ranks 2, 3, 5, 8, Ace
+        elseif name == "Fibonacci" then
+            if is_fib then mult = mult + 8 end
+
+        -- Scary Face: +30 chips per face card (J, Q, K)
+        elseif name == "Scary Face" then
+            if is_face then chips = chips + 30 end
+
+        -- Scholar: +20 chips and +4 mult per Ace
+        elseif name == "Scholar" then
+            if is_ace then
+                chips = chips + 20
+                mult = mult + 4
+            end
+
+        -- Even Steven: +4 mult per even-ranked card (2, 4, 6, 8, 10)
+        elseif name == "Even Steven" then
+            if is_even then mult = mult + 4 end
+
+        -- Odd Todd: +31 chips per odd-ranked card (A, 3, 5, 7, 9)
+        elseif name == "Odd Todd" then
+            if is_odd then chips = chips + 31 end
+
+        -- Walkie Talkie: +10 chips and +4 mult per 10 or 4
+        elseif name == "Walkie Talkie" then
+            if id == 10 or id == 4 then
+                chips = chips + 10
+                mult = mult + 4
+            end
+
+        -- Smiley Face: +5 mult per face card
+        elseif name == "Smiley Face" then
+            if is_face then mult = mult + 5 end
+
+        -- Photograph: x2 mult on the FIRST face card scored only
+        elseif name == "Photograph" then
+            if is_face and not state.photo_used then
+                state.photo_used = true
+                mult = mult * 2
+            end
+
+        -- Triboulet: x2 mult per King or Queen scored
+        elseif name == "Triboulet" then
+            if id == 12 or id == 13 then mult = mult * 2 end
+
+        -- Bloodstone: 1-in-2 chance of x1.5 for Hearts
+        -- Approximated as EV: x1.25 per Heart
+        elseif name == "Bloodstone" then
+            if suit_matches(card, "Hearts") then mult = mult * 1.25 end
+
+        -- Arrowhead: +50 chips per Spade scored
+        elseif name == "Arrowhead" then
+            if suit_matches(card, "Spades") then chips = chips + 50 end
+
+        -- Onyx Agate: +7 mult per Club scored
+        elseif name == "Onyx Agate" then
+            if suit_matches(card, "Clubs") then mult = mult + 7 end
+
+        -- Ancient Joker: x1.5 per card matching the joker's chosen suit
+        -- (the chosen suit rotates each round, stored on ability.extra.suit)
+        elseif name == "Ancient Joker" then
+            local chosen = j.ability.extra and j.ability.extra.suit
+            if chosen and suit_matches(card, chosen) then
+                mult = mult * 1.5
+            end
+
+        -- The Idol: x2 per card matching a specific rank AND suit
+        -- (target changes each round, stored on ability.extra)
+        elseif name == "The Idol" then
+            local tid = j.ability.extra and j.ability.extra.id
+            local tsuit = j.ability.extra and j.ability.extra.suit
+            if tid and tsuit and id == tid and suit_matches(card, tsuit) then
+                mult = mult * 2
+            end
+        end
+    end
+
+    return chips, mult
+end
+
+-------------------------------------------------------------------------
+-- Phase 2: flat joker effects (fire once per hand, in slot order L→R).
+-- These depend on hand type, game state, or aggregate card properties
+-- rather than individual scoring cards.
+--
+-- ctx fields: hand_name, all_cards, played, num_played, suits
+-------------------------------------------------------------------------
+local function eval_flat_jokers(resolved, chips, mult, ctx)
+    for _, j in ipairs(resolved) do
+        local ability = j.ability
+        local name = j.name
+
+        -------------------------------------------
+        -- Always-fire and game-state jokers
+        -------------------------------------------
+        if name == "Joker" then
+            -- The basic Joker: flat +4 mult
+            mult = mult + 4
+
+        elseif name == "Half Joker" then
+            -- +20 mult when playing 3 or fewer cards
+            if ctx.num_played <= 3 then mult = mult + 20 end
+
+        elseif name == "Banner" then
+            -- +30 chips per discard remaining this round
+            local discards = (G.GAME.current_round
+                and G.GAME.current_round.discards_left) or 0
+            chips = chips + 30 * discards
+
+        elseif name == "Mystic Summit" then
+            -- +15 mult when 0 discards remain
+            local discards = (G.GAME.current_round
+                and G.GAME.current_round.discards_left) or 0
+            if discards == 0 then mult = mult + 15 end
+
+        elseif name == "Abstract Joker" then
+            -- +3 mult per joker slot filled
+            mult = mult + 3 * #G.jokers.cards
+
+        elseif name == "Stuntman" then
+            -- Flat +250 chips
+            chips = chips + 250
+
+        elseif name == "Supernova" then
+            -- +mult equal to the number of times this hand type was played
+            local times = (G.GAME.hands[ctx.hand_name]
+                and G.GAME.hands[ctx.hand_name].played) or 0
+            mult = mult + times
+
+        elseif name == "Acrobat" then
+            -- x3 mult on the final hand of the round
+            local hands = (G.GAME.current_round
+                and G.GAME.current_round.hands_left) or 0
+            if hands == 1 then mult = mult * 3 end
+
+        elseif name == "Bootstraps" then
+            -- +2 mult per $5 currently held
+            local dollars = G.GAME.dollars or 0
+            mult = mult + 2 * math.floor(dollars / 5)
+
+        elseif name == "Blackboard" then
+            -- x3 mult if every held (non-played) card is a Spade or Club
+            local all_dark = true
+            for _, c in ipairs(ctx.all_cards) do
+                if not ctx.played[c] and not c.debuff then
+                    if c.base.suit ~= "Spades" and c.base.suit ~= "Clubs" then
+                        all_dark = false
+                        break
+                    end
+                end
+            end
+            if all_dark then mult = mult * 3 end
+
+        elseif name == "Raised Fist" then
+            -- +2× the rank of the lowest held-in-hand card
+            local lowest = math.huge
+            for _, c in ipairs(ctx.all_cards) do
+                if not ctx.played[c] and not c.debuff then
+                    if c.base.id < lowest then lowest = c.base.id end
+                end
+            end
+            if lowest < math.huge then mult = mult + 2 * lowest end
+
+        elseif name == "Blue Joker" then
+            -- +2 chips per card remaining in the draw pile
+            local remaining = (G.deck and G.deck.cards
+                and #G.deck.cards) or 0
+            chips = chips + 2 * remaining
+
+        elseif name == "Joker Stencil" then
+            -- x mult from stored value (based on empty joker slots)
+            mult = mult * (ability.x_mult or 1)
+
+        elseif name == "Flower Pot" then
+            -- x3 mult if scoring cards include all 4 suits
+            local s = ctx.suits
+            if s.Hearts > 0 and s.Diamonds > 0
+                and s.Clubs > 0 and s.Spades > 0 then
+                mult = mult * (ability.x_mult or 3)
+            end
+
+        elseif name == "Drivers License" then
+            -- x3 mult if ≥16 enhanced cards in full deck (read stored value)
+            mult = mult * (ability.x_mult or 1)
+
+        -------------------------------------------
+        -- Accumulated / dynamic-value jokers
+        -- These store a running total that updates as you play.
+        -------------------------------------------
+        elseif name == "Green Joker" then
+            mult = mult + (ability.mult or 0)
+        elseif name == "Red Card" then
+            mult = mult + (ability.mult or 0)
+        elseif name == "Popcorn" then
+            mult = mult + (ability.mult or 0)
+        elseif name == "Ceremonial Dagger" then
+            mult = mult + (ability.mult or 0)
+        elseif name == "Ride the Bus" then
+            mult = mult + (ability.mult or 0)
+        elseif name == "Obelisk" then
+            -- x mult that grows when you don't play your most-played hand
+            mult = mult * (ability.x_mult or 1)
+        elseif name == "Ice Cream" then
+            chips = chips + (ability.extra and ability.extra.chips or 0)
+        elseif name == "Runner" then
+            chips = chips + (ability.chips or 0)
+        elseif name == "Loyalty Card" then
+            -- x4 mult (or stored x_mult) on every 4th hand played
+            if ability.remaining == 0 then
+                mult = mult * (ability.x_mult or 4)
+            end
+        elseif name == "Flash Card" then
+            mult = mult + (ability.mult or 0)
+        elseif name == "Spare Trousers" then
+            mult = mult + (ability.mult or 0)
+        elseif name == "Castle" then
+            chips = chips + (ability.extra and ability.extra.chips
+                or ability.chips or 0)
+        elseif name == "Wee Joker" then
+            chips = chips + (ability.extra and ability.extra.chips
+                or ability.chips or 0)
+        elseif name == "Erosion" then
+            mult = mult + (ability.mult or 0)
+        elseif name == "Glass Joker" then
+            -- Accumulated x_mult from destroyed Glass Cards
+            mult = mult * (ability.x_mult or 1)
+        elseif name == "Madness" then
+            -- x mult that grows each round
+            mult = mult * (ability.x_mult or 1)
+        elseif name == "Square Joker" then
+            chips = chips + (ability.extra and ability.extra.chips
+                or ability.chips or 0)
+        elseif name == "Vampire" then
+            -- x mult that grows from consuming enhancements
+            mult = mult * (ability.x_mult or 1)
+        elseif name == "Hologram" then
+            -- x mult that grows when cards are added to deck
+            mult = mult * (ability.x_mult or 1)
+        elseif name == "Fortune Teller" then
+            -- +1 mult per tarot card used this run
+            mult = mult + (ability.mult or 0)
+        elseif name == "Steel Joker" then
+            -- Accumulated x_mult based on Steel Cards in full deck
+            mult = mult * (ability.x_mult or 1)
+        elseif name == "Swashbuckler" then
+            -- +mult equal to total sell value of other jokers
+            mult = mult + (ability.mult or 0)
+
+        -------------------------------------------
+        -- Hand-type conditional jokers
+        -------------------------------------------
+        elseif name == "Jolly Joker" then
+            if contains_pair[ctx.hand_name] then mult = mult + 8 end
+        elseif name == "Zany Joker" then
+            if contains_three[ctx.hand_name] then mult = mult + 12 end
+        elseif name == "Mad Joker" then
+            if contains_two_pair[ctx.hand_name] then mult = mult + 10 end
+        elseif name == "Crazy Joker" then
+            if contains_straight[ctx.hand_name] then mult = mult + 12 end
+        elseif name == "Droll Joker" then
+            if contains_flush[ctx.hand_name] then mult = mult + 10 end
+        elseif name == "Sly Joker" then
+            if contains_pair[ctx.hand_name] then chips = chips + 50 end
+        elseif name == "Wily Joker" then
+            if contains_three[ctx.hand_name] then chips = chips + 100 end
+        elseif name == "Clever Joker" then
+            if contains_two_pair[ctx.hand_name] then chips = chips + 80 end
+        elseif name == "Devious Joker" then
+            if contains_straight[ctx.hand_name] then chips = chips + 100 end
+        elseif name == "Crafty Joker" then
+            if contains_flush[ctx.hand_name] then chips = chips + 80 end
+        elseif name == "The Duo" then
+            -- x2 mult if hand contains a Pair
+            if contains_pair[ctx.hand_name] then mult = mult * 2 end
+        elseif name == "The Trio" then
+            -- x3 mult if hand contains Three of a Kind
+            if contains_three[ctx.hand_name] then mult = mult * 3 end
+        elseif name == "The Family" then
+            -- x4 mult if hand contains Four of a Kind
+            if contains_four[ctx.hand_name] then mult = mult * 4 end
+        elseif name == "The Order" then
+            -- x3 mult if hand contains a Straight
+            if contains_straight[ctx.hand_name] then mult = mult * 3 end
+        elseif name == "The Tribe" then
+            -- x2 mult if hand contains a Flush
+            if contains_flush[ctx.hand_name] then mult = mult * 2 end
+        end
+
+        -- Joker edition bonuses (applied after each joker's own effect)
+        local edition = j.edition
+        if edition then
+            if edition.foil then
+                chips = chips + 50
+            elseif edition.holo then
+                mult = mult + 10
+            elseif edition.polychrome then
+                mult = mult * 1.5
+            end
+        end
+    end
+
+    return chips, mult
+end
+
+-------------------------------------------------------------------------
+-- Score a complete combo of played cards against the full hand.
+-- Follows Balatro's three-phase evaluation order.
+-- Returns: hand_name, total_score, scoring_cards
+-------------------------------------------------------------------------
 local function score_combo(cards, all_cards)
+    -- Identify the poker hand type and look up base chips/mult from level
     local hand_name, _, _ = G.FUNCS.get_poker_hand_info(cards)
     if not hand_name then return nil, 0 end
     local hand_info = G.GAME.hands[hand_name]
@@ -351,75 +689,148 @@ local function score_combo(cards, all_cards)
     local chips = hand_info.chips
     local mult = hand_info.mult
 
-    -- build set of played cards for held-in-hand lookup
+    -- The Flint boss blind halves the hand's base chips and mult
+    if is_flint_active() then
+        chips = math.ceil(chips / 2)
+        mult = math.ceil(mult / 2)
+    end
+
+    -- Set of played cards (for held-in-hand lookups later)
     local played = {}
-    for _, card in ipairs(cards) do
-        played[card] = true
-    end
+    for _, card in ipairs(cards) do played[card] = true end
 
-    -- identify which cards actually form the hand (not kickers)
+    -- Determine which cards score (excludes kickers, includes Stone Cards)
     local scoring = get_scoring_cards(cards, hand_name)
-    local scoring_set = {}
-    for _, card in ipairs(scoring) do
-        scoring_set[card] = true
-    end
 
-    for _, card in ipairs(cards) do
-        -- skip debuffed and non-scoring (kicker) cards
-        if not card.debuff and scoring_set[card] then
-            -- base chip value from rank
-            chips = chips + (card.base.nominal or 0)
+    -- Resolve Blueprint/Brainstorm into effective joker list once
+    local resolved = resolve_jokers()
 
-            -- enhancement bonuses
-            local ability = card.ability
-            if ability then
-                local name = ability.name
-                if name == "Bonus Card" then
-                    chips = chips + 30
-                elseif name == "Mult Card" then
-                    mult = mult + 4
-                elseif name == "Glass Card" then
-                    mult = mult * 2
-                elseif name == "Stone Card" then
-                    chips = chips + 50
-                elseif name == "Lucky Card" then
-                    -- average expected value: 1 in 5 chance of +20 mult
-                    mult = mult + 4
+    -- Cross-card state for per-card joker effects
+    local state = { photo_used = false }
+
+    -------------------------------------------------
+    -- Phase 1: each scoring card fires L→R
+    -- Each trigger applies in order:
+    --   base chips → enhancement → edition → per-card jokers
+    -- Retriggers repeat the entire sequence for that card.
+    -------------------------------------------------
+    for idx, card in ipairs(scoring) do
+        if not card.debuff then
+            local triggers = get_triggers(card, idx, false)
+            for _ = 1, triggers do
+                -- Base chip value from card rank (Stone Cards have nominal=0)
+                chips = chips + (card.base.nominal or 0)
+
+                -- Card enhancement bonuses
+                local ability = card.ability
+                if ability then
+                    local ename = ability.name
+                    if ename == "Bonus Card" then
+                        chips = chips + 30
+                    elseif ename == "Mult Card" then
+                        mult = mult + 4
+                    elseif ename == "Glass Card" then
+                        mult = mult * 2
+                    elseif ename == "Stone Card" then
+                        chips = chips + 50
+                    elseif ename == "Lucky Card" then
+                        -- EV: 1/5 chance of +20 mult ≈ +4 average
+                        mult = mult + 4
+                    end
+                    -- Permanent bonus chips (from hand-scored upgrades)
+                    chips = chips + (ability.perma_bonus or 0)
                 end
-                -- perma_bonus is confirmed in dump
-                chips = chips + (ability.perma_bonus or 0)
-            end
 
-            -- edition bonuses
-            local edition = card.edition
-            if edition then
-                if edition.foil then
-                    chips = chips + 50
-                elseif edition.holo then
-                    mult = mult + 10
-                elseif edition.polychrome then
-                    mult = mult * 1.5
+                -- Card edition bonuses
+                local edition = card.edition
+                if edition then
+                    if edition.foil then
+                        chips = chips + 50
+                    elseif edition.holo then
+                        mult = mult + 10
+                    elseif edition.polychrome then
+                        mult = mult * 1.5
+                    end
                 end
+
+                -- Per-card joker effects for this card
+                chips, mult = eval_per_card_jokers(
+                    card, resolved, chips, mult, state
+                )
             end
         end
     end
 
-    -- held-in-hand effects (cards NOT played)
+    -------------------------------------------------
+    -- Phase 2: flat joker effects fire L→R
+    -------------------------------------------------
+    local suits = count_suits(scoring)
+    local ctx = {
+        hand_name   = hand_name,
+        all_cards   = all_cards,
+        played      = played,
+        num_played  = #cards,
+        suits       = suits,
+    }
+    chips, mult = eval_flat_jokers(resolved, chips, mult, ctx)
+
+    -------------------------------------------------
+    -- Phase 3: held-in-hand effects (with retriggers)
+    -- Steel Card, Baron, and Shoot the Moon fire per held card.
+    -- Mime and Red Seal provide retriggers for held cards.
+    -------------------------------------------------
+    -- Pre-check which held-in-hand joker effects are active
+    local has_baron = false
+    local baron_count = 0       -- how many Baron instances (Blueprint can copy)
+    local has_shoot_moon = false
+    local shoot_moon_count = 0
+    for _, j in ipairs(resolved) do
+        if j.name == "Baron" then
+            has_baron = true
+            baron_count = baron_count + 1
+        end
+        if j.name == "Shoot the Moon" then
+            has_shoot_moon = true
+            shoot_moon_count = shoot_moon_count + 1
+        end
+    end
+
     for _, card in ipairs(all_cards) do
         if not played[card] and not card.debuff then
-            local ability = card.ability
-            if ability and ability.name == "Steel Card" then
-                mult = mult * 1.5
+            local is_steel = card.ability and card.ability.name == "Steel Card"
+            local is_king = card.base.id == 13
+            local is_queen = card.base.id == 12
+
+            -- Only process cards that have at least one held-in-hand effect
+            if is_steel or (has_baron and is_king)
+                or (has_shoot_moon and is_queen) then
+                local triggers = get_triggers(card, 0, true)
+                for _ = 1, triggers do
+                    -- Steel Card enhancement: x1.5 mult per trigger
+                    if is_steel then
+                        mult = mult * 1.5
+                    end
+                    -- Baron: x1.5 mult per held King, per Baron instance
+                    if has_baron and is_king then
+                        for _ = 1, baron_count do
+                            mult = mult * 1.5
+                        end
+                    end
+                    -- Shoot the Moon: +13 mult per held Queen, per instance
+                    if has_shoot_moon and is_queen then
+                        mult = mult + 13 * shoot_moon_count
+                    end
+                end
             end
         end
     end
-
-    -- apply joker bonuses (pass scoring cards for per-card effects)
-    chips, mult = apply_jokers(chips, mult, scoring, hand_name, all_cards, played, #cards)
 
     return hand_name, chips * mult, scoring
 end
 
+-------------------------------------------------------------------------
+-- Display helpers: convert cards to compact readable labels
+-------------------------------------------------------------------------
 local rank_names = {
     [2] = "2", [3] = "3", [4] = "4", [5] = "5", [6] = "6",
     [7] = "7", [8] = "8", [9] = "9", [10] = "10",
@@ -444,39 +855,50 @@ local function cards_label(cards)
     return table.concat(labels, ", ")
 end
 
+-- Label all cards EXCEPT those in the exclude list
 local function cards_label_exclude(cards, exclude)
     local exc_set = {}
-    for _, card in ipairs(exclude) do
-        exc_set[card] = true
-    end
+    for _, card in ipairs(exclude) do exc_set[card] = true end
     local labels = {}
     for _, card in ipairs(cards) do
-        if not exc_set[card] then
-            labels[#labels + 1] = card_label(card)
-        end
+        if not exc_set[card] then labels[#labels + 1] = card_label(card) end
     end
     return table.concat(labels, ", ")
 end
 
+-------------------------------------------------------------------------
+-- Analyze the current hand: try every possible combo (sizes 5→1),
+-- score each one, and return the top 3 distinct hand types.
+-------------------------------------------------------------------------
 local function analyze_hand()
     if not G or not G.hand or not G.hand.cards then return nil end
     local cards = G.hand.cards
     if #cards == 0 then return nil end
+
+    -- Evaluate every possible combo of every size
     local best = {}
     for size = 5, 1, -1 do
         if #cards >= size then
             for _, combo in ipairs(combinations(cards, size)) do
                 local name, score, scoring = score_combo(combo, cards)
                 if name then
-                    best[#best + 1] = { name = name, score = score, cards = scoring, play = combo }
+                    best[#best + 1] = {
+                        name = name, score = score,
+                        cards = scoring, play = combo,
+                    }
                 end
             end
         end
     end
+
+    -- Sort by score descending; break ties by preferring fewer cards
     table.sort(best, function(a, b)
         if a.score ~= b.score then return a.score > b.score end
         return #a.play < #b.play
     end)
+
+    -- Deduplicate: keep only the best combo per hand type,
+    -- but collect tied alternatives for display
     local seen = {}
     local top = {}
     for _, entry in ipairs(best) do
@@ -487,6 +909,7 @@ local function analyze_hand()
             top[#top + 1] = entry
         elseif top[#top].name == entry.name and entry.score == top[#top].score
             and #entry.play == #top[#top].play then
+            -- Tied alternative for the same hand type and size
             local alts = top[#top].alts
             local label = cards_label(entry.cards)
             if not alts.seen_labels then alts.seen_labels = {} end
@@ -499,6 +922,9 @@ local function analyze_hand()
     return top
 end
 
+-------------------------------------------------------------------------
+-- F2 keybind: print the top 3 hands to the console
+-------------------------------------------------------------------------
 SMODS.Keybind({
     key_pressed = "f2",
     action = function(self)
@@ -506,17 +932,23 @@ SMODS.Keybind({
         if not results or #results == 0 then return end
         local lines = {"", "-- Best Hands --"}
         for i, r in ipairs(results) do
+            -- Format: "1. Flush (Ah, Kh, Qh + 7h, 3h)  ~ 1234 points"
             local play_str = cards_label(r.play)
             if #r.play > #r.cards then
-                play_str = cards_label(r.cards) .. " + " .. cards_label_exclude(r.play, r.cards)
+                play_str = cards_label(r.cards)
+                    .. " + " .. cards_label_exclude(r.play, r.cards)
             end
-            local line = i .. ". " .. r.name .. " (" .. play_str .. ")     ~ " .. math.floor(r.score) .. " points"
+            local line = i .. ". " .. r.name
+                .. " (" .. play_str .. ")     ~ "
+                .. math.floor(r.score) .. " points"
+            -- Show tied alternatives if any
             if r.alts and #r.alts > 0 then
                 local alt_labels = {}
                 for _, alt in ipairs(r.alts) do
                     alt_labels[#alt_labels + 1] = cards_label(alt.cards)
                 end
-                line = line .. "  (or " .. table.concat(alt_labels, ", or ") .. ")"
+                line = line .. "  (or "
+                    .. table.concat(alt_labels, ", or ") .. ")"
             end
             lines[#lines + 1] = line
         end
@@ -524,6 +956,9 @@ SMODS.Keybind({
     end
 })
 
+-------------------------------------------------------------------------
+-- F3 keybind: dump all card and joker properties to a file for debugging
+-------------------------------------------------------------------------
 SMODS.Keybind({
     key_pressed = "f3",
     action = function(self)
