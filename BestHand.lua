@@ -1023,6 +1023,16 @@ SMODS.Keybind({
         local results = analyze_hand()
         if not results or #results == 0 then return end
         local lines = {"", "-- Best Hands --"}
+        -- Note when Splash makes all played cards score
+        if G.jokers and G.jokers.cards then
+            for _, joker in ipairs(G.jokers.cards) do
+                if not joker.debuff and joker.ability
+                    and joker.ability.name == "Splash" then
+                    lines[#lines + 1] = "(All cards score with Splash joker)"
+                    break
+                end
+            end
+        end
         for i, r in ipairs(results) do
             -- Format: "1. Flush (Ah, Kh, Qh + 7h, 3h)  ~ 1234 points"
             local play_str = cards_label(r.play)
