@@ -436,6 +436,10 @@ local function eval_per_card_jokers(card, resolved, chips, mult, state)
                 mult = mult * 1.5
             end
 
+        -- Hiker: +5 chips per scoring card
+        elseif name == "Hiker" then
+            chips = chips + 5
+
         -- The Idol: x2 per card matching a specific rank AND suit
         -- (target changes each round, stored on ability.extra)
         elseif name == "The Idol" then
