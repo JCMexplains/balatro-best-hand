@@ -760,6 +760,21 @@ local function score_combo(cards, all_cards)
     -- Identify the poker hand type and look up base chips/mult from level
     local hand_name, _, _ = G.FUNCS.get_poker_hand_info(cards)
     if not hand_name then return nil, 0 end
+
+    -- With Four Fingers, Balatro may detect Straight Flush / Royal Flush
+    -- when the flush subset and straight subset don't overlap (e.g. 4
+    -- suited cards + 1 off-suit card that completes the straight).  Reject
+    -- these so the individual Flush / Straight combos are recommended.
+    if hand_name == "Straight Flush" or hand_name == "Royal Flush" then
+        local flush_cards = get_flush_members(cards)
+        if #flush_cards < #cards then
+            local sub_name = G.FUNCS.get_poker_hand_info(flush_cards)
+            if sub_name ~= "Straight Flush" and sub_name ~= "Royal Flush" then
+                return nil, 0
+            end
+        end
+    end
+
     local hand_info = G.GAME.hands[hand_name]
     if not hand_info then return nil, 0 end
 
