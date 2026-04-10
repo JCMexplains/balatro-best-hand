@@ -563,13 +563,12 @@ local function eval_per_card_jokers(card, resolved, chips, mult, state)
         elseif name == "Onyx Agate" then
             if suit_matches(card, "Clubs") then mult = mult + 7 end
 
-        -- Ancient Joker: x1.5 per card matching the joker's chosen suit
-        -- (the chosen suit rotates each round). Some Balatro versions
-        -- store ability.extra as a bare number rather than a config
-        -- table, so we must check the type before indexing .suit.
+        -- Ancient Joker: x1.5 per card matching the joker's chosen suit.
+        -- The chosen suit rotates each round and is stored on
+        -- G.GAME.current_round.ancient_card.suit, not on the joker.
         elseif name == "Ancient Joker" then
-            local extra = j.ability.extra
-            local chosen = type(extra) == "table" and extra.suit
+            local ac = G.GAME.current_round and G.GAME.current_round.ancient_card
+            local chosen = ac and ac.suit
             if chosen and suit_matches(card, chosen) then
                 mult = mult * 1.5
             end
@@ -578,13 +577,13 @@ local function eval_per_card_jokers(card, resolved, chips, mult, state)
         elseif name == "Hiker" then
             chips = chips + 5
 
-        -- The Idol: x2 per card matching a specific rank AND suit
-        -- (target changes each round). Same caveat as Ancient Joker:
-        -- ability.extra may be a bare number in some versions.
+        -- The Idol: x2 per card matching a specific rank AND suit.
+        -- Target rotates each round and is stored on
+        -- G.GAME.current_round.idol_card.{id, suit}.
         elseif name == "The Idol" then
-            local extra = j.ability.extra
-            local tid = type(extra) == "table" and extra.id
-            local tsuit = type(extra) == "table" and extra.suit
+            local ic = G.GAME.current_round and G.GAME.current_round.idol_card
+            local tid = ic and ic.id
+            local tsuit = ic and ic.suit
             if tid and tsuit and id == tid and suit_matches(card, tsuit) then
                 mult = mult * 2
             end
