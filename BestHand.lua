@@ -1040,7 +1040,7 @@ SMODS.Keybind({
                 .. format_number(r.score) .. " points"
             -- Mark scores that include expected-value approximations
             -- (Lucky Card enhancements, Bloodstone joker)
-            if r.used_ev then line = line .. " (EV)" end
+            if r.used_ev then line = line .. " (expected value)" end
             -- Show tied alternatives if any
             if r.alts and #r.alts > 0 then
                 local alt_labels = {}
