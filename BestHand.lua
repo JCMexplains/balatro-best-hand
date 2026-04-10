@@ -1071,6 +1071,12 @@ SMODS.Keybind({
                 dump(joker, "joker[" .. i .. "]", 0)
             end
         end
+        -- Dump G.GAME.current_round so we can find where Balatro stores
+        -- per-round joker state (e.g. Ancient Joker's chosen suit lives
+        -- on current_round.ancient_card, The Idol's target on idol_card)
+        if G.GAME and G.GAME.current_round then
+            dump(G.GAME.current_round, "current_round", 0)
+        end
         table.sort(out)
         local path = love.filesystem.getSaveDirectory() .. "/card_dump.txt"
         local f = io.open(path, "w")
