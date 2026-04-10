@@ -940,6 +940,13 @@ local suit_symbols = {
     ["Clubs"] = "c", ["Spades"] = "s",
 }
 
+-- Format an integer with commas as thousands separators (e.g. 1234567 → "1,234,567")
+local function format_number(n)
+    local s = string.format("%.0f", n)
+    local result = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+    return (result:gsub("^,", ""))
+end
+
 local function card_label(card)
     local rank = rank_names[card.base.id] or "?"
     local suit = suit_symbols[card.base.suit] or "?"
@@ -1049,7 +1056,7 @@ SMODS.Keybind({
             end
             local line = i .. ". " .. r.name
                 .. " (" .. play_str .. ")     ~ "
-                .. math.floor(r.score) .. " points"
+                .. format_number(r.score) .. " points"
             -- Show tied alternatives if any
             if r.alts and #r.alts > 0 then
                 local alt_labels = {}
