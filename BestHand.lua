@@ -553,7 +553,10 @@ local function eval_per_card_jokers(card, resolved, chips, mult, state)
         -- Bloodstone: 1-in-2 chance of x1.5 for Hearts
         -- Approximated as EV: x1.25 per Heart
         elseif name == "Bloodstone" then
-            if suit_matches(card, "Hearts") then mult = mult * 1.25 end
+            if suit_matches(card, "Hearts") then
+                mult = mult * 1.25
+                state.used_ev = true
+            end
 
         -- Arrowhead: +50 chips per Spade scored
         elseif name == "Arrowhead" then
@@ -786,8 +789,11 @@ local function score_combo(cards, all_cards)
     -- Resolve Blueprint/Brainstorm into effective joker list once
     local resolved = resolve_jokers()
 
-    -- Cross-card state for per-card joker effects
-    local state = { photo_used = false }
+    -- Cross-card state for per-card joker effects.
+    -- used_ev gets flipped true whenever a probabilistic effect
+    -- (Lucky Card, Bloodstone) contributes to the score, so the F2
+    -- output can label the result as an expected value.
+    local state = { photo_used = false, used_ev = false }
 
     -------------------------------------------------
     -- Phase 1: each scoring card fires L→R
@@ -817,6 +823,7 @@ local function score_combo(cards, all_cards)
                     elseif ename == "Lucky Card" then
                         -- EV: 1/5 chance of +20 mult ≈ +4 average
                         mult = mult + 4
+                        state.used_ev = true
                     end
                     -- Permanent bonus chips (from hand-scored upgrades)
                     chips = chips + (ability.perma_bonus or 0)
@@ -897,7 +904,7 @@ local function score_combo(cards, all_cards)
         end
     end
 
-    return hand_name, chips * mult, scoring
+    return hand_name, chips * mult, scoring, state.used_ev
 end
 
 -------------------------------------------------------------------------
@@ -959,11 +966,12 @@ local function analyze_hand()
     for size = 5, 1, -1 do
         if #cards >= size then
             for _, combo in ipairs(combinations(cards, size)) do
-                local name, score, scoring = score_combo(combo, cards)
+                local name, score, scoring, used_ev = score_combo(combo, cards)
                 if name then
                     best[#best + 1] = {
                         name = name, score = score,
                         cards = scoring, play = combo,
+                        used_ev = used_ev,
                     }
                 end
             end
@@ -1030,6 +1038,9 @@ SMODS.Keybind({
             local line = i .. ". " .. r.name
                 .. " (" .. play_str .. ")     ~ "
                 .. format_number(r.score) .. " points"
+            -- Mark scores that include expected-value approximations
+            -- (Lucky Card enhancements, Bloodstone joker)
+            if r.used_ev then line = line .. " (EV)" end
             -- Show tied alternatives if any
             if r.alts and #r.alts > 0 then
                 local alt_labels = {}
