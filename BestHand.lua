@@ -564,9 +564,12 @@ local function eval_per_card_jokers(card, resolved, chips, mult, state)
             if suit_matches(card, "Clubs") then mult = mult + 7 end
 
         -- Ancient Joker: x1.5 per card matching the joker's chosen suit
-        -- (the chosen suit rotates each round, stored on ability.extra.suit)
+        -- (the chosen suit rotates each round). Some Balatro versions
+        -- store ability.extra as a bare number rather than a config
+        -- table, so we must check the type before indexing .suit.
         elseif name == "Ancient Joker" then
-            local chosen = j.ability.extra and j.ability.extra.suit
+            local extra = j.ability.extra
+            local chosen = type(extra) == "table" and extra.suit
             if chosen and suit_matches(card, chosen) then
                 mult = mult * 1.5
             end
@@ -576,10 +579,12 @@ local function eval_per_card_jokers(card, resolved, chips, mult, state)
             chips = chips + 5
 
         -- The Idol: x2 per card matching a specific rank AND suit
-        -- (target changes each round, stored on ability.extra)
+        -- (target changes each round). Same caveat as Ancient Joker:
+        -- ability.extra may be a bare number in some versions.
         elseif name == "The Idol" then
-            local tid = j.ability.extra and j.ability.extra.id
-            local tsuit = j.ability.extra and j.ability.extra.suit
+            local extra = j.ability.extra
+            local tid = type(extra) == "table" and extra.id
+            local tsuit = type(extra) == "table" and extra.suit
             if tid and tsuit and id == tid and suit_matches(card, tsuit) then
                 mult = mult * 2
             end
