@@ -1,0 +1,9 @@
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Runtime debug dumps
+card_dump.txt
