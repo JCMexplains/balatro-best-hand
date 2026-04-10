@@ -63,6 +63,55 @@ local contains_two_pair = {
 local fib_ranks = { [2] = true, [3] = true, [5] = true, [8] = true, [14] = true }
 
 -------------------------------------------------------------------------
+-- Joker lookup tables (data-driven dispatch for jokers with uniform logic)
+-------------------------------------------------------------------------
+
+-- Per-card suit mult jokers: +3 mult per scoring card of the matching suit
+local suit_mult_jokers = {
+    ["Greedy Joker"]     = "Diamonds",
+    ["Lusty Joker"]      = "Hearts",
+    ["Wrathful Joker"]   = "Spades",
+    ["Gluttonous Joker"] = "Clubs",
+}
+
+-- Flat jokers that are pure accumulator reads (value lives on ability.*)
+local flat_add_mult = {
+    ["Green Joker"] = true, ["Red Card"] = true, ["Popcorn"] = true,
+    ["Ceremonial Dagger"] = true, ["Ride the Bus"] = true,
+    ["Flash Card"] = true, ["Spare Trousers"] = true, ["Erosion"] = true,
+    ["Fortune Teller"] = true, ["Swashbuckler"] = true,
+}
+local flat_x_mult = {
+    ["Obelisk"] = true, ["Joker Stencil"] = true, ["Drivers License"] = true,
+    ["Glass Joker"] = true, ["Madness"] = true, ["Vampire"] = true,
+    ["Hologram"] = true, ["Steel Joker"] = true,
+}
+local flat_add_chips = {
+    ["Ice Cream"] = true, ["Runner"] = true, ["Castle"] = true,
+    ["Wee Joker"] = true, ["Square Joker"] = true,
+}
+
+-- Hand-type conditional jokers: fire when the played hand satisfies a
+-- containment table. op is one of "chips", "mult", or "xmult".
+local hand_conditional_jokers = {
+    ["Jolly Joker"]   = { contains = contains_pair,     op = "mult",  amount = 8 },
+    ["Zany Joker"]    = { contains = contains_three,    op = "mult",  amount = 12 },
+    ["Mad Joker"]     = { contains = contains_two_pair, op = "mult",  amount = 10 },
+    ["Crazy Joker"]   = { contains = contains_straight, op = "mult",  amount = 12 },
+    ["Droll Joker"]   = { contains = contains_flush,    op = "mult",  amount = 10 },
+    ["Sly Joker"]     = { contains = contains_pair,     op = "chips", amount = 50 },
+    ["Wily Joker"]    = { contains = contains_three,    op = "chips", amount = 100 },
+    ["Clever Joker"]  = { contains = contains_two_pair, op = "chips", amount = 80 },
+    ["Devious Joker"] = { contains = contains_straight, op = "chips", amount = 100 },
+    ["Crafty Joker"]  = { contains = contains_flush,    op = "chips", amount = 80 },
+    ["The Duo"]       = { contains = contains_pair,     op = "xmult", amount = 2 },
+    ["The Trio"]      = { contains = contains_three,    op = "xmult", amount = 3 },
+    ["The Family"]    = { contains = contains_four,     op = "xmult", amount = 4 },
+    ["The Order"]     = { contains = contains_straight, op = "xmult", amount = 3 },
+    ["The Tribe"]     = { contains = contains_flush,    op = "xmult", amount = 2 },
+}
+
+-------------------------------------------------------------------------
 -- suit_matches: does this card count as `target_suit`?
 -- Wild Cards match every suit.
 -------------------------------------------------------------------------
@@ -414,6 +463,23 @@ local function resolve_jokers()
 end
 
 -------------------------------------------------------------------------
+-- Apply a foil/holo/polychrome edition bonus to (chips, mult).
+-- Used for both card editions (Phase 1) and joker editions (Phase 2).
+-------------------------------------------------------------------------
+local function apply_edition(edition, chips, mult)
+    if edition then
+        if edition.foil then
+            chips = chips + 50
+        elseif edition.holo then
+            mult = mult + 10
+        elseif edition.polychrome then
+            mult = mult * 1.5
+        end
+    end
+    return chips, mult
+end
+
+-------------------------------------------------------------------------
 -- Phase 1 helper: per-card joker effects for a single scoring card.
 -- Called once per trigger (base + retriggers), in joker slot order.
 -- These jokers give bonuses based on the individual card's rank/suit.
@@ -433,15 +499,11 @@ local function eval_per_card_jokers(card, resolved, chips, mult, state)
     for _, j in ipairs(resolved) do
         local name = j.name
 
-        -- Suit-mult jokers: +3 mult per matching suit in scoring cards
-        if name == "Greedy Joker" then
-            if suit_matches(card, "Diamonds") then mult = mult + 3 end
-        elseif name == "Lusty Joker" then
-            if suit_matches(card, "Hearts") then mult = mult + 3 end
-        elseif name == "Wrathful Joker" then
-            if suit_matches(card, "Spades") then mult = mult + 3 end
-        elseif name == "Gluttonous Joker" then
-            if suit_matches(card, "Clubs") then mult = mult + 3 end
+        -- Suit mult jokers (Greedy/Lusty/Wrathful/Gluttonous):
+        -- +3 mult per scoring card of the matching suit
+        local suit_target = suit_mult_jokers[name]
+        if suit_target then
+            if suit_matches(card, suit_target) then mult = mult + 3 end
 
         -- Fibonacci: +8 mult for ranks 2, 3, 5, 8, Ace
         elseif name == "Fibonacci" then
@@ -540,9 +602,38 @@ local function eval_flat_jokers(resolved, chips, mult, ctx)
         local name = j.name
 
         -------------------------------------------
-        -- Always-fire and game-state jokers
+        -- Data-driven dispatch: accumulator jokers whose value lives on
+        -- ability.mult / ability.x_mult / ability.extra.chips
         -------------------------------------------
-        if name == "Joker" then
+        if flat_add_mult[name] then
+            mult = mult + (ability.mult or 0)
+
+        elseif flat_x_mult[name] then
+            mult = mult * (ability.x_mult or 1)
+
+        elseif flat_add_chips[name] then
+            chips = chips + (ability.extra and ability.extra.chips
+                or ability.chips or 0)
+
+        -------------------------------------------
+        -- Data-driven dispatch: hand-type conditional jokers
+        -------------------------------------------
+        elseif hand_conditional_jokers[name] then
+            local hc = hand_conditional_jokers[name]
+            if hc.contains[ctx.hand_name] then
+                if hc.op == "mult" then
+                    mult = mult + hc.amount
+                elseif hc.op == "chips" then
+                    chips = chips + hc.amount
+                else -- "xmult"
+                    mult = mult * hc.amount
+                end
+            end
+
+        -------------------------------------------
+        -- Custom-logic jokers (unique conditions or game state)
+        -------------------------------------------
+        elseif name == "Joker" then
             -- The basic Joker: flat +4 mult
             mult = mult + 4
 
@@ -616,10 +707,6 @@ local function eval_flat_jokers(resolved, chips, mult, ctx)
                 and #G.deck.cards) or 0
             chips = chips + 2 * remaining
 
-        elseif name == "Joker Stencil" then
-            -- x mult from stored value (based on empty joker slots)
-            mult = mult * (ability.x_mult or 1)
-
         elseif name == "Flower Pot" then
             -- x3 mult if scoring cards include all 4 suits
             local s = ctx.suits
@@ -628,72 +715,11 @@ local function eval_flat_jokers(resolved, chips, mult, ctx)
                 mult = mult * (ability.x_mult or 3)
             end
 
-        elseif name == "Drivers License" then
-            -- x3 mult if ≥16 enhanced cards in full deck (read stored value)
-            mult = mult * (ability.x_mult or 1)
-
-        -------------------------------------------
-        -- Accumulated / dynamic-value jokers
-        -- These store a running total that updates as you play.
-        -------------------------------------------
-        elseif name == "Green Joker" then
-            mult = mult + (ability.mult or 0)
-        elseif name == "Red Card" then
-            mult = mult + (ability.mult or 0)
-        elseif name == "Popcorn" then
-            mult = mult + (ability.mult or 0)
-        elseif name == "Ceremonial Dagger" then
-            mult = mult + (ability.mult or 0)
-        elseif name == "Ride the Bus" then
-            mult = mult + (ability.mult or 0)
-        elseif name == "Obelisk" then
-            -- x mult that grows when you don't play your most-played hand
-            mult = mult * (ability.x_mult or 1)
-        elseif name == "Ice Cream" then
-            chips = chips + (ability.extra and ability.extra.chips or 0)
-        elseif name == "Runner" then
-            chips = chips + (ability.chips or 0)
         elseif name == "Loyalty Card" then
             -- x4 mult (or stored x_mult) on every 4th hand played
             if ability.remaining == 0 then
                 mult = mult * (ability.x_mult or 4)
             end
-        elseif name == "Flash Card" then
-            mult = mult + (ability.mult or 0)
-        elseif name == "Spare Trousers" then
-            mult = mult + (ability.mult or 0)
-        elseif name == "Castle" then
-            chips = chips + (ability.extra and ability.extra.chips
-                or ability.chips or 0)
-        elseif name == "Wee Joker" then
-            chips = chips + (ability.extra and ability.extra.chips
-                or ability.chips or 0)
-        elseif name == "Erosion" then
-            mult = mult + (ability.mult or 0)
-        elseif name == "Glass Joker" then
-            -- Accumulated x_mult from destroyed Glass Cards
-            mult = mult * (ability.x_mult or 1)
-        elseif name == "Madness" then
-            -- x mult that grows each round
-            mult = mult * (ability.x_mult or 1)
-        elseif name == "Square Joker" then
-            chips = chips + (ability.extra and ability.extra.chips
-                or ability.chips or 0)
-        elseif name == "Vampire" then
-            -- x mult that grows from consuming enhancements
-            mult = mult * (ability.x_mult or 1)
-        elseif name == "Hologram" then
-            -- x mult that grows when cards are added to deck
-            mult = mult * (ability.x_mult or 1)
-        elseif name == "Fortune Teller" then
-            -- +1 mult per tarot card used this run
-            mult = mult + (ability.mult or 0)
-        elseif name == "Steel Joker" then
-            -- Accumulated x_mult based on Steel Cards in full deck
-            mult = mult * (ability.x_mult or 1)
-        elseif name == "Swashbuckler" then
-            -- +mult equal to total sell value of other jokers
-            mult = mult + (ability.mult or 0)
 
         elseif name == "Card Sharp" then
             -- x3 mult if this hand type has already been played this round
@@ -701,58 +727,10 @@ local function eval_flat_jokers(resolved, chips, mult, ctx)
             if h and (h.played_this_round or 0) > 0 then
                 mult = mult * (ability.extra and ability.extra.Xmult or 3)
             end
-
-        -------------------------------------------
-        -- Hand-type conditional jokers
-        -------------------------------------------
-        elseif name == "Jolly Joker" then
-            if contains_pair[ctx.hand_name] then mult = mult + 8 end
-        elseif name == "Zany Joker" then
-            if contains_three[ctx.hand_name] then mult = mult + 12 end
-        elseif name == "Mad Joker" then
-            if contains_two_pair[ctx.hand_name] then mult = mult + 10 end
-        elseif name == "Crazy Joker" then
-            if contains_straight[ctx.hand_name] then mult = mult + 12 end
-        elseif name == "Droll Joker" then
-            if contains_flush[ctx.hand_name] then mult = mult + 10 end
-        elseif name == "Sly Joker" then
-            if contains_pair[ctx.hand_name] then chips = chips + 50 end
-        elseif name == "Wily Joker" then
-            if contains_three[ctx.hand_name] then chips = chips + 100 end
-        elseif name == "Clever Joker" then
-            if contains_two_pair[ctx.hand_name] then chips = chips + 80 end
-        elseif name == "Devious Joker" then
-            if contains_straight[ctx.hand_name] then chips = chips + 100 end
-        elseif name == "Crafty Joker" then
-            if contains_flush[ctx.hand_name] then chips = chips + 80 end
-        elseif name == "The Duo" then
-            -- x2 mult if hand contains a Pair
-            if contains_pair[ctx.hand_name] then mult = mult * 2 end
-        elseif name == "The Trio" then
-            -- x3 mult if hand contains Three of a Kind
-            if contains_three[ctx.hand_name] then mult = mult * 3 end
-        elseif name == "The Family" then
-            -- x4 mult if hand contains Four of a Kind
-            if contains_four[ctx.hand_name] then mult = mult * 4 end
-        elseif name == "The Order" then
-            -- x3 mult if hand contains a Straight
-            if contains_straight[ctx.hand_name] then mult = mult * 3 end
-        elseif name == "The Tribe" then
-            -- x2 mult if hand contains a Flush
-            if contains_flush[ctx.hand_name] then mult = mult * 2 end
         end
 
         -- Joker edition bonuses (applied after each joker's own effect)
-        local edition = j.edition
-        if edition then
-            if edition.foil then
-                chips = chips + 50
-            elseif edition.holo then
-                mult = mult + 10
-            elseif edition.polychrome then
-                mult = mult * 1.5
-            end
-        end
+        chips, mult = apply_edition(j.edition, chips, mult)
     end
 
     return chips, mult
@@ -840,17 +818,8 @@ local function score_combo(cards, all_cards)
                     chips = chips + (ability.perma_bonus or 0)
                 end
 
-                -- Card edition bonuses
-                local edition = card.edition
-                if edition then
-                    if edition.foil then
-                        chips = chips + 50
-                    elseif edition.holo then
-                        mult = mult + 10
-                    elseif edition.polychrome then
-                        mult = mult * 1.5
-                    end
-                end
+                -- Card edition bonuses (foil/holo/polychrome)
+                chips, mult = apply_edition(card.edition, chips, mult)
 
                 -- Per-card joker effects for this card
                 chips, mult = eval_per_card_jokers(
