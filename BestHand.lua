@@ -5,9 +5,9 @@
 -- Scoring follows Balatro's evaluation order:
 --   Phase 1: Each scoring card fires L→R (with retriggers):
 --            base chips → enhancement → edition → per-card jokers
---   Phase 2: Flat joker effects fire L→R (with Blueprint/Brainstorm)
---   Phase 3: Held-in-hand effects (Steel Card, Baron, Shoot the Moon)
+--   Phase 2: Held-in-hand effects (Steel Card, Baron, Shoot the Moon)
 --            fire per held card, with Mime/Red Seal retriggers
+--   Phase 3: Flat joker effects fire L→R (with Blueprint/Brainstorm)
 -------------------------------------------------------------------------
 
 -------------------------------------------------------------------------
@@ -81,14 +81,20 @@ local flat_add_mult = {
     ["Flash Card"] = true, ["Spare Trousers"] = true, ["Erosion"] = true,
     ["Fortune Teller"] = true, ["Swashbuckler"] = true,
 }
+-- Steel Joker is NOT in this table: its x_mult isn't stored on ability,
+-- it's computed live from the full playing deck at scoring time.
 local flat_x_mult = {
     ["Obelisk"] = true, ["Joker Stencil"] = true, ["Drivers License"] = true,
     ["Glass Joker"] = true, ["Madness"] = true, ["Vampire"] = true,
-    ["Hologram"] = true, ["Steel Joker"] = true,
+    ["Hologram"] = true, ["Throwback"] = true, ["Constellation"] = true,
 }
 local flat_add_chips = {
     ["Ice Cream"] = true, ["Runner"] = true, ["Castle"] = true,
     ["Wee Joker"] = true, ["Square Joker"] = true,
+}
+-- Jokers whose +mult value lives on ability.extra.mult rather than ability.mult
+local flat_add_mult_extra = {
+    ["Gros Michel"] = true,
 }
 
 -- Hand-type conditional jokers: fire when the played hand satisfies a
@@ -171,6 +177,13 @@ end
 -------------------------------------------------------------------------
 local function get_straight_members(cards)
     if #cards <= 1 then return cards end
+    -- If the full combo is already a straight, every card participates.
+    -- Without this check Four Fingers breaks 5-card straights: removing
+    -- any single card leaves a 4-card subset that still registers as a
+    -- straight, so the kicker-detection loop below would incorrectly
+    -- drop a valid scoring card.
+    local full_name = G.FUNCS.get_poker_hand_info(cards)
+    if full_name and contains_straight[full_name] then return cards end
     for i = 1, #cards do
         local subset = {}
         for j, c in ipairs(cards) do
@@ -191,7 +204,7 @@ end
 -- `card_index` is the 1-based position in the scoring card list.
 -- `is_held` selects held-in-hand retrigger sources (Mime, Red Seal).
 -------------------------------------------------------------------------
-local function get_triggers(card, card_index, is_held)
+local function get_triggers(card, card_index, is_held, pareidolia)
     local triggers = 1 -- base: every card fires at least once
 
     -- Red Seal doubles triggers (works on both played and held cards)
@@ -211,10 +224,11 @@ local function get_triggers(card, card_index, is_held)
                     local id = card.base.id
                     if id >= 2 and id <= 5 then triggers = triggers * 2 end
                 elseif name == "Sock and Buskin" then
-                    -- Retrigger face cards (J=11, Q=12, K=13)
-                    if card.base.id >= 11 and card.base.id <= 13 then
-                        triggers = triggers * 2
-                    end
+                    -- Retrigger face cards (J=11, Q=12, K=13).
+                    -- Pareidolia makes every card count as face.
+                    local is_face = pareidolia
+                        or (card.base.id >= 11 and card.base.id <= 13)
+                    if is_face then triggers = triggers * 2 end
                 elseif name == "Hanging Chad" then
                     -- The first scoring card fires 3 total times (+2 retriggers)
                     if card_index == 1 then triggers = triggers * 3 end
@@ -488,9 +502,10 @@ end
 --   state.photo_used — prevents Photograph from firing on subsequent
 --                      face cards (only the first face card gets x2).
 -------------------------------------------------------------------------
-local function eval_per_card_jokers(card, resolved, chips, mult, state)
+local function eval_per_card_jokers(card, resolved, chips, mult, state, pareidolia)
     local id = card.base.id
-    local is_face = id >= 11 and id <= 13
+    -- Pareidolia makes every card count as a face card for joker effects
+    local is_face = pareidolia or (id >= 11 and id <= 13)
     local is_ace = id == 14
     local is_fib = fib_ranks[id] or false
     local is_even = id >= 2 and id <= 10 and id % 2 == 0
@@ -622,6 +637,9 @@ local function eval_flat_jokers(resolved, chips, mult, ctx)
             chips = chips + (ability.extra and ability.extra.chips
                 or ability.chips or 0)
 
+        elseif flat_add_mult_extra[name] then
+            mult = mult + ((ability.extra and ability.extra.mult) or 0)
+
         -------------------------------------------
         -- Data-driven dispatch: hand-type conditional jokers
         -------------------------------------------
@@ -669,10 +687,14 @@ local function eval_flat_jokers(resolved, chips, mult, ctx)
             chips = chips + 250
 
         elseif name == "Supernova" then
-            -- +mult equal to the number of times this hand type was played
+            -- +mult equal to the number of times this hand type was played.
+            -- Balatro increments hands[name].played at the top of
+            -- evaluate_play BEFORE Supernova reads it, so the game's value
+            -- is one higher than what score_combo sees pre-play. Add 1
+            -- so the prediction matches what will actually score.
             local times = (G.GAME.hands[ctx.hand_name]
                 and G.GAME.hands[ctx.hand_name].played) or 0
-            mult = mult + times
+            mult = mult + times + 1
 
         elseif name == "Acrobat" then
             -- x3 mult on the final hand of the round
@@ -734,6 +756,22 @@ local function eval_flat_jokers(resolved, chips, mult, ctx)
             if h and (h.played_this_round or 0) > 0 then
                 mult = mult * (ability.extra and ability.extra.Xmult or 3)
             end
+
+        elseif name == "Steel Joker" then
+            -- Steel Joker's x_mult is computed live at scoring time from
+            -- the total number of Steel-enhanced cards across the full
+            -- playing deck (deck + hand + play + discard). ability.x_mult
+            -- on the joker is just the base (1) and never updates.
+            local count = 0
+            if G.playing_cards then
+                for _, c in ipairs(G.playing_cards) do
+                    if c.ability and c.ability.name == "Steel Card" then
+                        count = count + 1
+                    end
+                end
+            end
+            local per_steel = (ability.extra and ability.extra.x_mult_mod) or 0.2
+            mult = mult * (1 + per_steel * count)
         end
 
         -- Joker edition bonuses (applied after each joker's own effect)
@@ -789,6 +827,14 @@ local function score_combo(cards, all_cards)
     -- Resolve Blueprint/Brainstorm into effective joker list once
     local resolved = resolve_jokers()
 
+    -- Detect Pareidolia once up front. When present, every card counts
+    -- as a face card for Scary Face, Smiley Face, Photograph, and the
+    -- Sock and Buskin retrigger check.
+    local pareidolia = false
+    for _, j in ipairs(resolved) do
+        if j.name == "Pareidolia" then pareidolia = true; break end
+    end
+
     -- Cross-card state for per-card joker effects.
     -- used_ev gets flipped true whenever a probabilistic effect
     -- (Lucky Card, Bloodstone) contributes to the score, so the F2
@@ -803,7 +849,7 @@ local function score_combo(cards, all_cards)
     -------------------------------------------------
     for idx, card in ipairs(scoring) do
         if not card.debuff then
-            local triggers = get_triggers(card, idx, false)
+            local triggers = get_triggers(card, idx, false, pareidolia)
             for _ = 1, triggers do
                 -- Base chip value from card rank (Stone Cards have nominal=0)
                 chips = chips + (card.base.nominal or 0)
@@ -812,9 +858,14 @@ local function score_combo(cards, all_cards)
                 local ability = card.ability
                 if ability then
                     local ename = ability.name
-                    if ename == "Bonus Card" then
+                    -- Balatro stores these enhancement names WITHOUT the
+                    -- "Card" suffix (confirmed from captured fixtures):
+                    -- "Bonus", "Mult" — but "Glass Card", "Steel Card",
+                    -- "Lucky Card" etc. DO carry the suffix. Inconsistent
+                    -- naming in the game data.
+                    if ename == "Bonus" then
                         chips = chips + 30
-                    elseif ename == "Mult Card" then
+                    elseif ename == "Mult" then
                         mult = mult + 4
                     elseif ename == "Glass Card" then
                         mult = mult * 2
@@ -834,29 +885,23 @@ local function score_combo(cards, all_cards)
 
                 -- Per-card joker effects for this card
                 chips, mult = eval_per_card_jokers(
-                    card, resolved, chips, mult, state
+                    card, resolved, chips, mult, state, pareidolia
                 )
             end
         end
     end
 
     -------------------------------------------------
-    -- Phase 2: flat joker effects fire L→R
-    -------------------------------------------------
-    local suits = count_suits(scoring)
-    local ctx = {
-        hand_name   = hand_name,
-        all_cards   = all_cards,
-        played      = played,
-        num_played  = #cards,
-        suits       = suits,
-    }
-    chips, mult = eval_flat_jokers(resolved, chips, mult, ctx)
-
-    -------------------------------------------------
-    -- Phase 3: held-in-hand effects (with retriggers)
+    -- Phase 2: held-in-hand effects (with retriggers)
     -- Steel Card, Baron, and Shoot the Moon fire per held card.
     -- Mime and Red Seal provide retriggers for held cards.
+    --
+    -- IMPORTANT: held-in-hand effects run BEFORE flat joker effects.
+    -- Balatro's state_events.lua calls SMODS.calculate_main_scoring
+    -- for the G.hand card-area (held cards) at line 673, and only
+    -- fires joker_main in the loop starting at line 680. Running them
+    -- in the opposite order mis-scales jokers like Mad Joker holo
+    -- that add flat mult on top of Baron's x1.5 multiplier.
     -------------------------------------------------
     -- Pre-check which held-in-hand joker effects are active
     local has_baron = false
@@ -883,11 +928,14 @@ local function score_combo(cards, all_cards)
             -- Only process cards that have at least one held-in-hand effect
             if is_steel or (has_baron and is_king)
                 or (has_shoot_moon and is_queen) then
-                local triggers = get_triggers(card, 0, true)
+                local triggers = get_triggers(card, 0, true, pareidolia)
                 for _ = 1, triggers do
-                    -- Steel Card enhancement: x1.5 mult per trigger
+                    -- Steel Card enhancement: x1.5 mult per trigger.
+                    -- Edition on the held Steel card fires per trigger
+                    -- too — e.g. polychrome adds another x1.5 on top.
                     if is_steel then
                         mult = mult * 1.5
+                        chips, mult = apply_edition(card.edition, chips, mult)
                     end
                     -- Baron: x1.5 mult per held King, per Baron instance
                     if has_baron and is_king then
@@ -904,7 +952,22 @@ local function score_combo(cards, all_cards)
         end
     end
 
-    return hand_name, chips * mult, scoring, state.used_ev
+    -------------------------------------------------
+    -- Phase 3: flat joker effects fire L→R (after held-in-hand effects)
+    -------------------------------------------------
+    local suits = count_suits(scoring)
+    local ctx = {
+        hand_name   = hand_name,
+        all_cards   = all_cards,
+        played      = played,
+        num_played  = #cards,
+        suits       = suits,
+    }
+    chips, mult = eval_flat_jokers(resolved, chips, mult, ctx)
+
+    -- Balatro floors the final score to an integer; mirror that so
+    -- polychrome/holo chains producing fractional intermediates match.
+    return hand_name, math.floor(chips * mult), scoring, state.used_ev
 end
 
 -------------------------------------------------------------------------
@@ -1093,5 +1156,322 @@ SMODS.Keybind({
         for _, line in ipairs(out) do f:write(line .. "\n") end
         f:close()
         print("Written to " .. path)
+    end
+})
+
+-------------------------------------------------------------------------
+-- Fixture capture: hook G.FUNCS.evaluate_play to record every played
+-- hand along with the score Balatro actually computed. These fixtures
+-- are the oracle for offline regression tests — the game itself is the
+-- ground truth, not hand-traced expected values.
+--
+-- Toggle with F4 (off by default). Captures go to
+--   <save>/best_hand_captures/capture_<timestamp>_<n>.lua
+-- Each file is a Lua literal loadable with dofile():
+--   return { played=..., held=..., jokers=..., game=...,
+--            hand_name=..., predicted_score=..., actual_score=... }
+--
+-- State is snapshotted BEFORE calling the real evaluate_play so it
+-- matches what F2 sees when you're about to play — any mismatch with
+-- actual_score is a real prediction bug. This naturally surfaces the
+-- pre-increment gotcha on jokers that read hands[name].played /
+-- played_this_round (Supernova, Card Sharp), since the game bumps those
+-- counters at the top of evaluate_play before scoring with them.
+-------------------------------------------------------------------------
+
+local capture_enabled = false
+local capture_dir = "best_hand_captures"
+
+-- Serialize a plain Lua value as a Lua literal. Not general-purpose:
+-- assumes scalars + nested tables of scalars, no cycles, no functions.
+local function serialize(v, indent)
+    indent = indent or ""
+    local t = type(v)
+    if t == "nil" then return "nil" end
+    if t == "boolean" then return tostring(v) end
+    if t == "number" then
+        if v ~= v then return "(0/0)" end
+        if v == math.huge then return "math.huge" end
+        if v == -math.huge then return "-math.huge" end
+        return tostring(v)
+    end
+    if t == "string" then return string.format("%q", v) end
+    if t ~= "table" then return "nil" end
+
+    local inner = indent .. "  "
+    local n, max_i = 0, 0
+    for k, _ in pairs(v) do
+        n = n + 1
+        if type(k) == "number" and k == math.floor(k) and k >= 1 then
+            if k > max_i then max_i = k end
+        end
+    end
+    if n == 0 then return "{}" end
+
+    local parts = {"{"}
+    if max_i == n then
+        -- Array-style
+        for i = 1, n do
+            parts[#parts + 1] = inner .. serialize(v[i], inner) .. ","
+        end
+    else
+        -- Hash-style, sorted by key for deterministic output
+        local keys = {}
+        for k in pairs(v) do keys[#keys + 1] = k end
+        table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+        for _, k in ipairs(keys) do
+            local key_str
+            if type(k) == "string" and k:match("^[%a_][%w_]*$") then
+                key_str = k
+            else
+                key_str = "[" .. serialize(k, inner) .. "]"
+            end
+            parts[#parts + 1] = inner .. key_str
+                .. " = " .. serialize(v[k], inner) .. ","
+        end
+    end
+    parts[#parts + 1] = indent .. "}"
+    return table.concat(parts, "\n")
+end
+
+-- Copy only scalar fields from a table. Used for ability.extra where
+-- different jokers store different fields (chips, Xmult, mult, etc.)
+local function copy_scalars(t)
+    if type(t) ~= "table" then return nil end
+    local result, any = {}, false
+    for k, val in pairs(t) do
+        local vt = type(val)
+        if vt == "number" or vt == "string" or vt == "boolean" then
+            result[k] = val
+            any = true
+        end
+    end
+    if not any then return nil end
+    return result
+end
+
+local function extract_edition(edition)
+    if not edition then return nil end
+    return {
+        foil = edition.foil,
+        holo = edition.holo,
+        polychrome = edition.polychrome,
+        negative = edition.negative,
+    }
+end
+
+local function extract_card(card)
+    local base = card.base or {}
+    local ability = card.ability or {}
+    return {
+        base = {
+            id      = base.id,
+            suit    = base.suit,
+            nominal = base.nominal,
+            value   = base.value,
+        },
+        ability = {
+            name        = ability.name,
+            perma_bonus = ability.perma_bonus,
+            extra       = copy_scalars(ability.extra),
+        },
+        edition = extract_edition(card.edition),
+        seal    = card.seal,
+        debuff  = card.debuff or nil,
+    }
+end
+
+local function extract_joker(joker)
+    local ability = joker.ability or {}
+    return {
+        ability = {
+            name        = ability.name,
+            mult        = ability.mult,
+            x_mult      = ability.x_mult,
+            chips       = ability.chips,
+            t_mult      = ability.t_mult,
+            t_chips     = ability.t_chips,
+            remaining   = ability.remaining,
+            perma_bonus = ability.perma_bonus,
+            extra       = copy_scalars(ability.extra),
+        },
+        edition = extract_edition(joker.edition),
+        debuff  = joker.debuff or nil,
+    }
+end
+
+local function extract_card_list(list)
+    local out = {}
+    for i, c in ipairs(list) do out[i] = extract_card(c) end
+    return out
+end
+
+local function extract_joker_list(list)
+    local out = {}
+    for i, j in ipairs(list) do out[i] = extract_joker(j) end
+    return out
+end
+
+-- Snapshot the parts of G.GAME that score_combo consults.
+local function extract_game_state()
+    local game = {}
+
+    if G.GAME and G.GAME.hands then
+        game.hands = {}
+        for name, info in pairs(G.GAME.hands) do
+            game.hands[name] = {
+                level             = info.level,
+                chips             = info.chips,
+                mult              = info.mult,
+                played            = info.played,
+                played_this_round = info.played_this_round,
+                visible           = info.visible,
+            }
+        end
+    end
+
+    if G.GAME and G.GAME.current_round then
+        local cr = G.GAME.current_round
+        game.current_round = {
+            hands_left    = cr.hands_left,
+            discards_left = cr.discards_left,
+            dollars       = cr.dollars,
+        }
+        if cr.ancient_card then
+            game.current_round.ancient_card = { suit = cr.ancient_card.suit }
+        end
+        if cr.idol_card then
+            game.current_round.idol_card = {
+                id   = cr.idol_card.id,
+                suit = cr.idol_card.suit,
+                rank = cr.idol_card.rank,
+            }
+        end
+    end
+
+    game.dollars = G.GAME and G.GAME.dollars
+
+    if G.GAME and G.GAME.blind then
+        game.blind = {
+            name     = G.GAME.blind.name,
+            disabled = G.GAME.blind.disabled,
+        }
+    end
+
+    if G.deck and G.deck.cards then
+        game.deck_remaining = #G.deck.cards
+    end
+
+    return game
+end
+
+-- Compute the mod's predicted score for the exact hand being played.
+-- Called with real Card objects, BEFORE Balatro mutates state.
+local function compute_predicted_score(played, held)
+    local all = {}
+    for _, c in ipairs(played) do all[#all + 1] = c end
+    for _, c in ipairs(held)   do all[#all + 1] = c end
+    return score_combo(played, all)
+end
+
+local function write_capture(fixture)
+    if love and love.filesystem and love.filesystem.createDirectory then
+        love.filesystem.createDirectory(capture_dir)
+    end
+    local base = love.filesystem.getSaveDirectory() .. "/" .. capture_dir
+    local stamp = os.date("%Y%m%d_%H%M%S")
+    local path
+    for i = 1, 1000 do
+        local try = base .. "/capture_" .. stamp .. "_" .. i .. ".lua"
+        local f = io.open(try, "r")
+        if not f then path = try; break end
+        f:close()
+    end
+    if not path then return end
+
+    local f = io.open(path, "w")
+    if not f then
+        print("[BestHand] failed to open capture file: " .. path)
+        return
+    end
+    f:write("-- BestHand capture fixture — auto-generated, safe to delete\n")
+    f:write("return " .. serialize(fixture) .. "\n")
+    f:close()
+    print("[BestHand] captured: " .. path)
+end
+
+-- Wrap G.FUNCS.evaluate_play. Capture PRE-scoring so the fixture matches
+-- what F2 would see just before playing; read the final score RIGHT AFTER
+-- the original returns — the synchronous joker iteration has finished by
+-- then, but the deferred chip-ease events haven't reset chip_total yet,
+-- so SMODS.calculate_round_score() still has the true total.
+if G.FUNCS and G.FUNCS.evaluate_play then
+    local original_evaluate_play = G.FUNCS.evaluate_play
+    G.FUNCS.evaluate_play = function(e)
+        local fixture
+        if capture_enabled then
+            local ok, err = pcall(function()
+                local played, held = {}, {}
+                for i, c in ipairs(G.play.cards) do played[i] = c end
+                for i, c in ipairs(G.hand.cards) do held[i]   = c end
+
+                fixture = {
+                    played = extract_card_list(played),
+                    held   = extract_card_list(held),
+                    jokers = extract_joker_list(G.jokers.cards),
+                    game   = extract_game_state(),
+                }
+
+                local hn = G.FUNCS.get_poker_hand_info(G.play.cards)
+                fixture.hand_name = hn
+
+                local _, score = compute_predicted_score(played, held)
+                fixture.predicted_score = score
+            end)
+            if not ok then
+                print("[BestHand] capture pre-error: " .. tostring(err))
+            end
+        end
+
+        original_evaluate_play(e)
+
+        if fixture then
+            local ok, err = pcall(function()
+                fixture.actual_score = math.floor(SMODS.calculate_round_score())
+
+                if fixture.predicted_score then
+                    local delta = fixture.actual_score - fixture.predicted_score
+                    local hn = tostring(fixture.hand_name or "?")
+                    local tag
+                    if delta == 0 then
+                        tag = "MATCH"
+                    else
+                        tag = "(off by " .. format_number(delta) .. ")"
+                    end
+                    print(string.format("[BestHand] %s: predicted %s, actual %s  %s",
+                        hn,
+                        format_number(fixture.predicted_score),
+                        format_number(fixture.actual_score),
+                        tag))
+                end
+
+                write_capture(fixture)
+            end)
+            if not ok then
+                print("[BestHand] capture post-error: " .. tostring(err))
+            end
+        end
+    end
+end
+
+SMODS.Keybind({
+    key_pressed = "f4",
+    action = function(self)
+        capture_enabled = not capture_enabled
+        if capture_enabled then
+            print("[BestHand] capture ENABLED — each played hand will be recorded")
+        else
+            print("[BestHand] capture disabled")
+        end
     end
 })
