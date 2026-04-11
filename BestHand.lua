@@ -148,9 +148,13 @@ local function count_suits(cards)
 end
 
 -------------------------------------------------------------------------
--- Identify which cards participate in a flush pattern.
--- With Four Fingers only 4 cards need to share a suit, so a 5-card combo
--- may contain a kicker that doesn't match.  Returns the matching subset.
+-- Identify which cards participate in a flush pattern. Returns the
+-- matching subset. Two wrinkles:
+--   * Four Fingers: only 4 cards need to share a suit, so a 5-card
+--     combo may contain a non-matching kicker.
+--   * Smeared Joker: Hearts+Diamonds and Spades+Clubs each collapse
+--     into a single virtual suit, so mixed-but-paired combos still
+--     count all their cards as flush members.
 -------------------------------------------------------------------------
 -- Paired suits for Smeared Joker: Hearts<->Diamonds, Spades<->Clubs.
 local smeared_pair = {
@@ -509,7 +513,8 @@ end
 
 -------------------------------------------------------------------------
 -- Apply a foil/holo/polychrome edition bonus to (chips, mult).
--- Used for both card editions (Phase 1) and joker editions (Phase 2).
+-- Used in three places: played-card editions in Phase 1, held Steel
+-- card editions in Phase 2, and joker editions in Phase 3.
 -------------------------------------------------------------------------
 local function apply_edition(edition, chips, mult)
     if edition then
@@ -532,6 +537,11 @@ end
 -- `state` carries cross-card flags:
 --   state.photo_used — prevents Photograph from firing on subsequent
 --                      face cards (only the first face card gets x2).
+--   state.used_ev    — set true when a probabilistic effect (Lucky
+--                      Card, Bloodstone) contributes; surfaces in F2
+--                      as an "(expected value)" marker.
+-- `pareidolia` makes every card count as a face card for Scary Face,
+-- Smiley Face, and Photograph.
 -------------------------------------------------------------------------
 local function eval_per_card_jokers(card, resolved, chips, mult, state, pareidolia)
     local id = card.base.id
@@ -643,9 +653,10 @@ local function eval_per_card_jokers(card, resolved, chips, mult, state, pareidol
 end
 
 -------------------------------------------------------------------------
--- Phase 2: flat joker effects (fire once per hand, in slot order L→R).
--- These depend on hand type, game state, or aggregate card properties
--- rather than individual scoring cards.
+-- Flat joker effects (fire once per hand, in slot order L→R). Called
+-- from Phase 3 of score_combo AFTER held-in-hand effects have run.
+-- These jokers depend on hand type, game state, or aggregate card
+-- properties rather than individual scoring cards.
 --
 -- ctx fields: hand_name, all_cards, played, num_played, suits
 -------------------------------------------------------------------------
@@ -814,8 +825,9 @@ end
 
 -------------------------------------------------------------------------
 -- Score a complete combo of played cards against the full hand.
--- Follows Balatro's three-phase evaluation order.
--- Returns: hand_name, total_score, scoring_cards
+-- Follows Balatro's three-phase evaluation order (scoring cards,
+-- then held-in-hand, then flat jokers).
+-- Returns: hand_name, total_score (floored int), scoring_cards, used_ev
 -------------------------------------------------------------------------
 local function score_combo(cards, all_cards)
     -- Identify the poker hand type and look up base chips/mult from level
