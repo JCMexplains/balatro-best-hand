@@ -614,12 +614,22 @@ local function eval_per_card_jokers(card, resolved, chips, mult, state, pareidol
         elseif name == "Triboulet" then
             if id == 12 or id == 13 then mult = mult * 2 end
 
-        -- Bloodstone: 1-in-2 chance of x1.5 for Hearts
-        -- Approximated as EV: x1.25 per Heart
+        -- Bloodstone: 1-in-2 chance of x1.5 mult per scored Heart.
+        -- EV mode (prob_config nil): x1.25 per Heart (= 0.5*1.5 + 0.5*1.0).
+        -- Exact mode: consume the next prob_config slot — true = hit (x1.5),
+        -- false/nil = miss (x1.0). Always increment prob_idx so F4 can
+        -- enumerate every outcome.
         elseif name == "Bloodstone" then
             if suit_matches(card, "Hearts") then
-                mult = mult * 1.25
-                state.used_ev = true
+                state.prob_idx = state.prob_idx + 1
+                if state.prob_config then
+                    if state.prob_config[state.prob_idx] then
+                        mult = mult * 1.5
+                    end
+                else
+                    mult = mult * 1.25
+                    state.used_ev = true
+                end
             end
 
         -- Arrowhead: +50 chips per Spade scored
@@ -835,9 +845,16 @@ end
 -- Score a complete combo of played cards against the full hand.
 -- Follows Balatro's three-phase evaluation order (scoring cards,
 -- then held-in-hand, then flat jokers).
--- Returns: hand_name, total_score (floored int), scoring_cards, used_ev
+--
+-- prob_config (optional) pins each probabilistic roll to a specific outcome.
+-- It is an array of booleans, one per probabilistic event in iteration order
+-- (Lucky Card triggers and Bloodstone-on-Heart triggers). true = hit, anything
+-- else = miss. When nil, the expected value is used (and used_ev flips true).
+-- The 5th return value is prob_idx — the total number of probabilistic events
+-- this hand consumed — which is what F4 needs to drive the 2^N enumeration.
+-- Returns: hand_name, score, scoring_cards, used_ev, prob_count
 -------------------------------------------------------------------------
-local function score_combo(cards, all_cards)
+local function score_combo(cards, all_cards, prob_config)
     -- Identify the poker hand type and look up base chips/mult from level
     local hand_name, _, _ = G.FUNCS.get_poker_hand_info(cards)
     if not hand_name then return nil, 0 end
@@ -887,10 +904,16 @@ local function score_combo(cards, all_cards)
     end
 
     -- Cross-card state for per-card joker effects.
-    -- used_ev gets flipped true whenever a probabilistic effect
-    -- (Lucky Card, Bloodstone) contributes to the score, so the F2
-    -- output can label the result as an expected value.
-    local state = { photo_card = nil, used_ev = false }
+    -- used_ev gets flipped true whenever a probabilistic effect (Lucky Card,
+    -- Bloodstone) contributes to the score in EV mode, so the F2 output can
+    -- label the result as an expected value.
+    -- prob_idx is the running count of probabilistic events consumed; F4
+    -- reads the final value to size its enumeration loop. prob_config is
+    -- the caller-supplied outcome pin (nil in F2 / EV mode).
+    local state = {
+        photo_card = nil, used_ev = false,
+        prob_idx = 0, prob_config = prob_config,
+    }
 
     -------------------------------------------------
     -- Phase 1: each scoring card fires L→R
@@ -923,9 +946,17 @@ local function score_combo(cards, all_cards)
                     elseif ename == "Stone Card" then
                         chips = chips + 50
                     elseif ename == "Lucky Card" then
-                        -- EV: 1/5 chance of +20 mult ≈ +4 average
-                        mult = mult + 4
-                        state.used_ev = true
+                        -- 1/5 chance of +20 mult. EV mode: +4 average.
+                        -- Exact mode: consume the next prob_config slot.
+                        state.prob_idx = state.prob_idx + 1
+                        if state.prob_config then
+                            if state.prob_config[state.prob_idx] then
+                                mult = mult + 20
+                            end
+                        else
+                            mult = mult + 4
+                            state.used_ev = true
+                        end
                     end
                     -- Permanent bonus chips (from hand-scored upgrades)
                     chips = chips + (ability.perma_bonus or 0)
@@ -1018,7 +1049,8 @@ local function score_combo(cards, all_cards)
 
     -- Balatro floors the final score to an integer; mirror that so
     -- polychrome/holo chains producing fractional intermediates match.
-    return hand_name, math.floor(chips * mult), scoring, state.used_ev
+    return hand_name, math.floor(chips * mult), scoring,
+        state.used_ev, state.prob_idx
 end
 
 -------------------------------------------------------------------------
@@ -1417,12 +1449,13 @@ local function extract_game_state()
 end
 
 -- Compute the mod's predicted score for the exact hand being played.
--- Called with real Card objects, BEFORE Balatro mutates state.
-local function compute_predicted_score(played, held)
+-- Called with real Card objects, BEFORE Balatro mutates state. prob_config
+-- (optional) pins each probabilistic roll; see score_combo for semantics.
+local function compute_predicted_score(played, held, prob_config)
     local all = {}
     for _, c in ipairs(played) do all[#all + 1] = c end
     for _, c in ipairs(held)   do all[#all + 1] = c end
-    return score_combo(played, all)
+    return score_combo(played, all, prob_config)
 end
 
 local function write_capture(fixture)
@@ -1476,8 +1509,30 @@ if G.FUNCS and G.FUNCS.evaluate_play then
                 local hn = G.FUNCS.get_poker_hand_info(G.play.cards)
                 fixture.hand_name = hn
 
-                local _, score = compute_predicted_score(played, held)
+                local _, score, _, _, n_prob =
+                    compute_predicted_score(played, held)
                 fixture.predicted_score = score
+
+                -- If this hand has any probabilistic events (Lucky Cards
+                -- or Bloodstone × Hearts), brute-force every 2^N outcome
+                -- so the match check can distinguish RNG variance from a
+                -- real prediction bug. Capped at N <= 10 (1024 configs).
+                if n_prob and n_prob > 0 and n_prob <= 10 then
+                    local possible, seen = {}, {}
+                    for mask = 0, (2 ^ n_prob) - 1 do
+                        local config = {}
+                        for i = 1, n_prob do
+                            config[i] = (math.floor(mask / (2 ^ (i - 1))) % 2) == 1
+                        end
+                        local _, s = compute_predicted_score(played, held, config)
+                        if not seen[s] then
+                            seen[s] = true
+                            possible[#possible + 1] = s
+                        end
+                    end
+                    table.sort(possible)
+                    fixture.possible_scores = possible
+                end
             end)
             if not ok then
                 print("[BestHand] capture pre-error: " .. tostring(err))
@@ -1491,18 +1546,42 @@ if G.FUNCS and G.FUNCS.evaluate_play then
                 fixture.actual_score = math.floor(SMODS.calculate_round_score())
 
                 if fixture.predicted_score then
-                    local delta = fixture.actual_score - fixture.predicted_score
+                    local actual = fixture.actual_score
+                    local possible = fixture.possible_scores
                     local hn = tostring(fixture.hand_name or "?")
+
+                    local matched = (actual == fixture.predicted_score)
+                    if not matched and possible then
+                        for _, s in ipairs(possible) do
+                            if s == actual then matched = true; break end
+                        end
+                    end
+
                     local tag
-                    if delta == 0 then
-                        tag = "MATCH"
+                    if matched then
+                        tag = possible
+                            and ("MATCH (1 of " .. #possible .. " possible)")
+                            or "MATCH"
+                    elseif possible then
+                        local closest = possible[1]
+                        for _, s in ipairs(possible) do
+                            if math.abs(s - actual) < math.abs(closest - actual) then
+                                closest = s
+                            end
+                        end
+                        tag = string.format(
+                            "MISS (actual not in %d possible, closest %s off by %s)",
+                            #possible,
+                            format_number(closest),
+                            format_number(actual - closest))
                     else
+                        local delta = actual - fixture.predicted_score
                         tag = "(off by " .. format_number(delta) .. ")"
                     end
                     print(string.format("[BestHand] %s: predicted %s, actual %s  %s",
                         hn,
                         format_number(fixture.predicted_score),
-                        format_number(fixture.actual_score),
+                        format_number(actual),
                         tag))
                 end
 
