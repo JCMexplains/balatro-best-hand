@@ -87,6 +87,7 @@ local flat_x_mult = {
     ["Obelisk"] = true, ["Joker Stencil"] = true, ["Drivers License"] = true,
     ["Glass Joker"] = true, ["Madness"] = true, ["Vampire"] = true,
     ["Hologram"] = true, ["Throwback"] = true, ["Constellation"] = true,
+    ["Lucky Cat"] = true,
 }
 local flat_add_chips = {
     ["Ice Cream"] = true, ["Runner"] = true, ["Castle"] = true,
@@ -151,20 +152,50 @@ end
 -- With Four Fingers only 4 cards need to share a suit, so a 5-card combo
 -- may contain a kicker that doesn't match.  Returns the matching subset.
 -------------------------------------------------------------------------
+-- Paired suits for Smeared Joker: Hearts<->Diamonds, Spades<->Clubs.
+local smeared_pair = {
+    Hearts = "Diamonds", Diamonds = "Hearts",
+    Spades = "Clubs",    Clubs = "Spades",
+}
+
+local function has_smeared_joker()
+    if not G.jokers or not G.jokers.cards then return false end
+    for _, joker in ipairs(G.jokers.cards) do
+        if not joker.debuff and joker.ability
+            and joker.ability.name == "Smeared Joker" then
+            return true
+        end
+    end
+    return false
+end
+
 local function get_flush_members(cards)
+    -- Smeared Joker merges Hearts+Diamonds and Spades+Clubs into single
+    -- virtual suits. Without this check, a 3d+2h combo (5-card flush
+    -- under Smeared) would only return 3 diamonds as members and the
+    -- 2 hearts would silently drop out of scoring.
+    local smeared = has_smeared_joker()
+    local function is_member(card, target)
+        if suit_matches(card, target) then return true end
+        if smeared and suit_matches(card, smeared_pair[target]) then
+            return true
+        end
+        return false
+    end
+
     local suits = {"Hearts", "Diamonds", "Clubs", "Spades"}
     local best_suit, best_count = nil, 0
     for _, suit in ipairs(suits) do
         local count = 0
         for _, card in ipairs(cards) do
-            if suit_matches(card, suit) then count = count + 1 end
+            if is_member(card, suit) then count = count + 1 end
         end
         if count > best_count then best_suit, best_count = suit, count end
     end
     if best_count >= #cards then return cards end
     local result = {}
     for _, card in ipairs(cards) do
-        if suit_matches(card, best_suit) then result[#result + 1] = card end
+        if is_member(card, best_suit) then result[#result + 1] = card end
     end
     return result
 end
