@@ -1,6 +1,7 @@
 # Editor / OS cruft
 .vscode/
 .idea/
+.claude/
 *.swp
 .DS_Store
 Thumbs.db
