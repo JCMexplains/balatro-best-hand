@@ -84,7 +84,7 @@ local flat_add_mult = {
 -- Steel Joker is NOT in this table: its x_mult isn't stored on ability,
 -- it's computed live from the full playing deck at scoring time.
 local flat_x_mult = {
-    ["Obelisk"] = true, ["Joker Stencil"] = true, ["Drivers License"] = true,
+    ["Obelisk"] = true, ["Joker Stencil"] = true, ["Driver's License"] = true,
     ["Glass Joker"] = true, ["Madness"] = true, ["Vampire"] = true,
     ["Hologram"] = true, ["Throwback"] = true, ["Constellation"] = true,
     ["Lucky Cat"] = true,
