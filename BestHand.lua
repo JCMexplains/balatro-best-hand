@@ -535,8 +535,10 @@ end
 -- These jokers give bonuses based on the individual card's rank/suit.
 --
 -- `state` carries cross-card flags:
---   state.photo_used — prevents Photograph from firing on subsequent
---                      face cards (only the first face card gets x2).
+--   state.photo_card — identity of the first scored face card to fire
+--                      Photograph. Every trigger of THAT card re-fires
+--                      Photograph (Hanging Chad stacks stack x2s), but
+--                      later face cards are blocked.
 --   state.used_ev    — set true when a probabilistic effect (Lucky
 --                      Card, Bloodstone) contributes; surfaces in F2
 --                      as an "(expected value)" marker.
@@ -595,10 +597,16 @@ local function eval_per_card_jokers(card, resolved, chips, mult, state, pareidol
         elseif name == "Smiley Face" then
             if is_face then mult = mult + 5 end
 
-        -- Photograph: x2 mult on the FIRST face card scored only
+        -- Photograph: x2 mult on the first scoring face card. Balatro's
+        -- condition has no once-per-hand flag, so every trigger of that
+        -- card re-fires Photograph — e.g. Hanging Chad retriggers of the
+        -- leftmost face card stack into x2 × x2 × x2. Track the card
+        -- identity, not a boolean, so later face cards are still blocked
+        -- but retriggers of the original one continue to fire.
         elseif name == "Photograph" then
-            if is_face and not state.photo_used then
-                state.photo_used = true
+            if is_face and (state.photo_card == nil
+                or state.photo_card == card) then
+                state.photo_card = card
                 mult = mult * 2
             end
 
@@ -882,7 +890,7 @@ local function score_combo(cards, all_cards)
     -- used_ev gets flipped true whenever a probabilistic effect
     -- (Lucky Card, Bloodstone) contributes to the score, so the F2
     -- output can label the result as an expected value.
-    local state = { photo_used = false, used_ev = false }
+    local state = { photo_card = nil, used_ev = false }
 
     -------------------------------------------------
     -- Phase 1: each scoring card fires L→R
