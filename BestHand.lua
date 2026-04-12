@@ -99,6 +99,27 @@ local flat_add_mult_extra = {
 }
 
 -------------------------------------------------------------------------
+-- Snapshot / restore a joker's ability table. Used to guarantee that
+-- calling calculate_joker during read-only analysis never corrupts
+-- game state — even if a joker mutates self.ability.* as a side
+-- effect of its calculate function, we roll it back immediately.
+-- Handles one level of nesting (ability.extra is a sub-table).
+-------------------------------------------------------------------------
+local function snapshot_ability(ability)
+    if not ability then return nil end
+    local copy = {}
+    for k, v in pairs(ability) do
+        if type(v) == "table" then
+            copy[k] = {}
+            for k2, v2 in pairs(v) do copy[k][k2] = v2 end
+        else
+            copy[k] = v
+        end
+    end
+    return copy
+end
+
+-------------------------------------------------------------------------
 -- Hybrid scoring deny list: jokers whose real calculate_joker must NOT
 -- be called during analysis because their joker_main calculate function
 -- has side effects (advances RNG, mutates state, etc.). These jokers
@@ -1142,10 +1163,17 @@ local function score_combo(cards, all_cards, prob_config, range_config)
             -- real Card object with methods, not a plain fixture table).
             -- Skipped for deny-list jokers whose calculate has side
             -- effects we can't tolerate during read-only analysis.
+            --
+            -- SAFETY: snapshot the joker's ability table before the
+            -- call and restore it unconditionally afterward. This
+            -- guarantees that even if a joker's calculate mutates
+            -- self.ability.* as a side effect, the game state is
+            -- never corrupted by our read-only probing.
             ---------------------------------------------------------
             if joker.calculate_joker
                 and not joker_main_deny[name]
                 and poker_hands then
+                local saved = snapshot_ability(joker.ability)
                 effect = joker:calculate_joker({
                     joker_main   = true,
                     full_hand    = cards,
@@ -1154,6 +1182,9 @@ local function score_combo(cards, all_cards, prob_config, range_config)
                     poker_hands  = poker_hands,
                     cardarea     = G.jokers,
                 })
+                -- Restore ability even if calculate_joker errored or
+                -- mutated — the snapshot is our safety net.
+                joker.ability = saved
             end
 
             if effect then
@@ -1185,6 +1216,48 @@ local function score_combo(cards, all_cards, prob_config, range_config)
                 local r = resolved[resolved_idx]
                 if r then
                     chips, mult = eval_flat_jokers({r}, chips, mult, ctx, state)
+                end
+            end
+
+            ---------------------------------------------------------
+            -- Pre-increment corrections for accumulator jokers.
+            --
+            -- Some jokers update their own ability in context.before
+            -- (which runs inside evaluate_play, BEFORE joker_main
+            -- reads the accumulated value). Our analysis runs BEFORE
+            -- evaluate_play, so we see the stale pre-increment value.
+            -- Add the delta that context.before would apply for THIS
+            -- hand. Same pattern as the existing Supernova +1 fix.
+            --
+            -- These corrections are pure arithmetic on the joker's
+            -- stored ability fields — no game functions called.
+            ---------------------------------------------------------
+            local ability = joker.ability or {}
+            local extra   = ability.extra or {}
+            if name == "Wee Joker" then
+                -- Gains +chip_mod chips per scored card in context.before.
+                -- Default chip_mod = 8. Scored cards = #scoring.
+                chips = chips + (extra.chip_mod or 8) * #scoring
+            elseif name == "Runner" then
+                -- Gains +chip_mod chips in context.before if the played
+                -- hand contains a Straight. Default chip_mod = 15.
+                if contains_straight[hand_name] then
+                    chips = chips + (extra.chip_mod or 15)
+                end
+            elseif name == "Square Joker" then
+                -- Gains +chip_mod chips in context.before if exactly 4
+                -- cards are played. Default chip_mod = 4.
+                if #cards == 4 then
+                    chips = chips + (extra.chip_mod or 4)
+                end
+            elseif name == "Green Joker" then
+                -- Gains +1 mult per hand played in context.before.
+                mult = mult + (extra.hand_add or 1)
+            elseif name == "Spare Trousers" then
+                -- Gains +extra.mult mult in context.before if the hand
+                -- contains a Two Pair.
+                if contains_two_pair[hand_name] then
+                    mult = mult + (extra.mult or 2)
                 end
             end
         end
