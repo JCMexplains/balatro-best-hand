@@ -746,9 +746,10 @@ local function eval_per_card_jokers(card, resolved, chips, mult, state, pareidol
                 mult = mult * 1.5
             end
 
-        -- Hiker: +5 chips per scoring card
-        elseif name == "Hiker" then
-            chips = chips + 5
+        -- Hiker: permanently adds +5 to the card's perma_bonus each
+        -- trigger. No immediate chip bonus — the chips come from
+        -- perma_bonus being read on subsequent triggers.  The
+        -- accumulation is handled in score_combo's Phase 1 loop.
 
         -- The Idol: x2 per card matching a specific rank AND suit.
         -- Target rotates each round and is stored on
@@ -1050,10 +1051,21 @@ local function score_combo(cards, all_cards, prob_config, range_config)
     --   base chips → enhancement → edition → per-card jokers
     -- Retriggers repeat the entire sequence for that card.
     -------------------------------------------------
+
+    -- Count Hiker instances — Hiker permanently adds +5 to each
+    -- card's perma_bonus per trigger (no immediate chip bonus).
+    -- We simulate the accumulation per card across triggers.
+    local hiker_count = 0
+    for _, j in ipairs(resolved) do
+        if j.name == "Hiker" then hiker_count = hiker_count + 1 end
+    end
+    local hiker_add = hiker_count * 5
+
     for idx, card in ipairs(scoring) do
         if not card.debuff then
             local triggers = get_triggers(card, idx, false, pareidolia, resolved)
-            for _ = 1, triggers do
+            local hiker_accum = 0  -- accumulated perma_bonus from Hiker for this card
+            for trig = 1, triggers do
                 -- Base chip value from card rank (Stone Cards have nominal=0)
                 chips = chips + (card.base.nominal or 0)
 
@@ -1087,8 +1099,11 @@ local function score_combo(cards, all_cards, prob_config, range_config)
                             state.used_ev = true
                         end
                     end
-                    -- Permanent bonus chips (from hand-scored upgrades)
-                    chips = chips + (ability.perma_bonus or 0)
+                    -- Permanent bonus chips (from hand-scored upgrades).
+                    -- Hiker accumulation: each Hiker adds +5 to perma_bonus
+                    -- per trigger, read on the NEXT trigger. hiker_accum
+                    -- tracks the total added by Hiker so far for this card.
+                    chips = chips + (ability.perma_bonus or 0) + hiker_accum
                 end
 
                 -- Card edition bonuses (foil/holo/polychrome)
@@ -1098,6 +1113,10 @@ local function score_combo(cards, all_cards, prob_config, range_config)
                 chips, mult = eval_per_card_jokers(
                     card, resolved, chips, mult, state, pareidolia
                 )
+
+                -- Hiker: permanently adds to this card's perma_bonus,
+                -- read on the next trigger of this same card.
+                hiker_accum = hiker_accum + hiker_add
             end
         end
     end
