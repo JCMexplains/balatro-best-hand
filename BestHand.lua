@@ -921,7 +921,9 @@ local function score_combo(cards, all_cards, prob_config, range_config)
     -- Also capture poker_hands (the sub-hand containment table the game builds)
     -- because the hybrid joker path passes it to real calculate_joker calls
     -- for jokers that check "does this hand contain a Pair?" etc.
-    local hand_name, poker_hands, _ = G.FUNCS.get_poker_hand_info(cards)
+    -- get_poker_hand_info returns (hand_name, display_name, poker_hands_table);
+    -- skip the display_name with _ to get the table in the 3rd slot.
+    local hand_name, _, poker_hands = G.FUNCS.get_poker_hand_info(cards)
     if not hand_name then return nil, 0 end
 
     -- With Four Fingers, Balatro may detect Straight Flush / Royal Flush
