@@ -1340,10 +1340,17 @@ local suit_symbols = {
 }
 
 -- Format an integer with commas as thousands separators (e.g. 1234567 → "1,234,567")
+-- For very large numbers, also append Balatro's exponent notation (e.g. "1.23e10").
 local function format_number(n)
     local s = string.format("%.0f", n)
     local result = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
-    return (result:gsub("^,", ""))
+    result = result:gsub("^,", "")
+    if n >= 1e7 then
+        local exp = math.floor(math.log10(n))
+        local mantissa = n / (10 ^ exp)
+        result = result .. string.format(" (%.2fe%d)", mantissa, exp)
+    end
+    return result
 end
 
 local function card_label(card)
