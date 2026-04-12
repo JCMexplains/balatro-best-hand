@@ -307,6 +307,7 @@ for i, j in ipairs(resolved) do
         played     = played_set,
         num_played = #played,
         suits      = _BH.count_suits(scoring_cards),
+        full_hand  = played,
     }
     chips, mult = _BH.eval_flat_jokers({j}, chips, mult, ctx, state)
     print(string.format("  [%d] %-20s Δchips %+d Δmult %+g  → chips=%d mult=%g",

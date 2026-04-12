@@ -346,6 +346,7 @@ for i, j in ipairs(resolved) do
         played     = played_set,
         num_played = #played,
         suits      = _BH.count_suits(scoring),
+        full_hand  = played,
     }
     chips, mult = _BH.eval_flat_jokers({j}, chips, mult, ctx, state)
     if chips ~= a or mult ~= b then

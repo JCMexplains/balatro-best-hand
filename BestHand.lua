@@ -59,6 +59,40 @@ local contains_two_pair = {
     ["Two Pair"] = true, ["Full House"] = true, ["Flush House"] = true,
 }
 
+-------------------------------------------------------------------------
+-- Actual rank-group containment from played cards. Balatro's hand-type
+-- conditional jokers (Jolly, The Duo, etc.) check the CARDS for sub-hand
+-- presence, not just the primary hand type name. A Flush with Ks, Ks
+-- contains a Pair even though "Flush" isn't in the contains_pair table.
+-- For flush/straight containment the primary hand type is reliable (a
+-- lower-priority hand can never contain a higher-priority pattern), so
+-- only rank-based containment needs card-level analysis.
+-------------------------------------------------------------------------
+local function check_hand_contains(contains_table, hand_name, cards)
+    -- For flush and straight, the primary hand type is sufficient
+    if contains_table == contains_flush or contains_table == contains_straight then
+        return contains_table[hand_name] or false
+    end
+    -- For rank-based containment, analyze actual card composition
+    local groups = {}
+    for _, c in ipairs(cards) do
+        if not (c.ability and c.ability.name == "Stone Card") then
+            local id = c.base.id
+            groups[id] = (groups[id] or 0) + 1
+        end
+    end
+    local counts = {}
+    for _, n in pairs(groups) do counts[#counts + 1] = n end
+    table.sort(counts, function(a, b) return a > b end)
+    local c1, c2 = counts[1] or 0, counts[2] or 0
+    if contains_table == contains_pair     then return c1 >= 2 end
+    if contains_table == contains_three    then return c1 >= 3 end
+    if contains_table == contains_four     then return c1 >= 4 end
+    if contains_table == contains_two_pair then return c1 >= 2 and c2 >= 2 end
+    -- Fallback: use the name-based table
+    return contains_table[hand_name] or false
+end
+
 -- Fibonacci-rank IDs for the Fibonacci joker (Ace = id 14 counts)
 local fib_ranks = { [2] = true, [3] = true, [5] = true, [8] = true, [14] = true }
 
@@ -308,10 +342,12 @@ local function get_triggers(card, card_index, is_held, pareidolia)
                     -- The first scoring card fires 3 total times (+2 retriggers)
                     if card_index == 1 then triggers = triggers * 3 end
                 elseif name == "Dusk" then
-                    -- Retrigger all cards on the final hand of the round
+                    -- Retrigger all cards on the final hand of the round.
+                    -- The game decrements hands_left before scoring, so
+                    -- "last hand" is hands_left == 0 at evaluation time.
                     local hands_left = (G.GAME.current_round
                         and G.GAME.current_round.hands_left) or 0
-                    if hands_left == 1 then triggers = triggers * 2 end
+                    if hands_left == 0 then triggers = triggers * 2 end
                 elseif name == "Seltzer" then
                     -- Retrigger all scored cards (temporary consumable effect)
                     triggers = triggers * 2
@@ -746,7 +782,7 @@ local function eval_flat_jokers(resolved, chips, mult, ctx, state)
         -------------------------------------------
         elseif hand_conditional_jokers[name] then
             local hc = hand_conditional_jokers[name]
-            if hc.contains[ctx.hand_name] then
+            if check_hand_contains(hc.contains, ctx.hand_name, ctx.full_hand) then
                 if hc.op == "mult" then
                     mult = mult + hc.amount
                 elseif hc.op == "chips" then
@@ -816,10 +852,12 @@ local function eval_flat_jokers(resolved, chips, mult, ctx, state)
             mult = mult + times + 1
 
         elseif name == "Acrobat" then
-            -- x3 mult on the final hand of the round
+            -- x3 mult on the final hand of the round.
+            -- The game decrements hands_left before scoring, so
+            -- "last hand" is hands_left == 0 at evaluation time.
             local hands = (G.GAME.current_round
                 and G.GAME.current_round.hands_left) or 0
-            if hands == 1 then mult = mult * 3 end
+            if hands == 0 then mult = mult * 3 end
 
         elseif name == "Bootstraps" then
             -- +2 mult per $5 currently held
@@ -889,7 +927,9 @@ local function eval_flat_jokers(resolved, chips, mult, ctx, state)
                     end
                 end
             end
-            local per_steel = (ability.extra and ability.extra.x_mult_mod) or 0.2
+            local per_steel = (type(ability.extra) == "table" and ability.extra.x_mult_mod)
+                or (type(ability.extra) == "number" and ability.extra)
+                or 0.2
             mult = mult * (1 + per_steel * count)
         end
 
