@@ -319,9 +319,13 @@ end
 local function get_triggers(card, card_index, is_held, pareidolia, resolved)
     local triggers = 1 -- base: every card fires at least once
 
-    -- Red Seal doubles triggers (works on both played and held cards)
+    -- Retrigger sources are ADDITIVE in Balatro: each source adds extra
+    -- repetitions rather than multiplying the total. Red Seal +1, Hanging
+    -- Chad +2 on the first card, Hack/Sock and Buskin/Dusk/Seltzer +1, etc.
+
+    -- Red Seal: +1 retrigger (works on both played and held cards)
     if card.seal == "Red" then
-        triggers = triggers * 2
+        triggers = triggers + 1
     end
 
     -- Use the resolved joker list if available (handles Blueprint/Brainstorm
@@ -348,35 +352,35 @@ local function get_triggers(card, card_index, is_held, pareidolia, resolved)
         -- Retrigger jokers for played/scoring cards
         for _, name in ipairs(joker_names) do
             if name == "Hack" then
-                -- Retrigger cards ranked 2, 3, 4, or 5
+                -- +1 retrigger for cards ranked 2, 3, 4, or 5
                 local id = card.base.id
-                if id >= 2 and id <= 5 then triggers = triggers * 2 end
+                if id >= 2 and id <= 5 then triggers = triggers + 1 end
             elseif name == "Sock and Buskin" then
-                -- Retrigger face cards (J=11, Q=12, K=13).
+                -- +1 retrigger for face cards (J=11, Q=12, K=13).
                 -- Pareidolia makes every card count as face.
                 local is_face = pareidolia
                     or (card.base.id >= 11 and card.base.id <= 13)
-                if is_face then triggers = triggers * 2 end
+                if is_face then triggers = triggers + 1 end
             elseif name == "Hanging Chad" then
-                -- The first scoring card fires 3 total times (+2 retriggers)
-                if card_index == 1 then triggers = triggers * 3 end
+                -- +2 retriggers on the first scoring card
+                if card_index == 1 then triggers = triggers + 2 end
             elseif name == "Dusk" then
-                -- Retrigger all cards on the final hand of the round.
+                -- +1 retrigger on the final hand of the round.
                 -- The game decrements hands_left before scoring, so
                 -- "last hand" is hands_left == 0 at evaluation time.
                 local hands_left = (G.GAME.current_round
                     and G.GAME.current_round.hands_left) or 0
-                if hands_left == 0 then triggers = triggers * 2 end
+                if hands_left == 0 then triggers = triggers + 1 end
             elseif name == "Seltzer" then
-                -- Retrigger all scored cards (temporary consumable effect)
-                triggers = triggers * 2
+                -- +1 retrigger for all scored cards
+                triggers = triggers + 1
             end
         end
     else
         -- Retrigger jokers for held-in-hand cards
         for _, name in ipairs(joker_names) do
             if name == "Mime" then
-                triggers = triggers * 2
+                triggers = triggers + 1
             end
         end
     end
@@ -1202,6 +1206,17 @@ local function score_combo(cards, all_cards, prob_config, range_config)
     -- `resolved` (built in Phase 1 above) provides the fallback path's
     -- pre-resolved ability/name/edition for Blueprint/Brainstorm jokers.
 
+    -- Baseball Card: each uncommon joker (rarity == 2) gives x1.5 mult.
+    -- The x1.5 fires at the uncommon joker's slot position, even if the
+    -- joker itself has no scoring effect. Detect presence once up front.
+    local has_baseball_card = false
+    for _, j in ipairs(resolved) do
+        if j.name == "Baseball Card" then
+            has_baseball_card = true
+            break
+        end
+    end
+
     -- Iterate the real joker Card objects (not the resolved list) so
     -- calculate_joker is called on the actual Card — Blueprint's own
     -- calculate_joker handles delegation to its copy target internally.
@@ -1274,6 +1289,16 @@ local function score_combo(cards, all_cards, prob_config, range_config)
                 if r then
                     chips, mult = eval_flat_jokers({r}, chips, mult, ctx, state)
                 end
+            end
+
+            ---------------------------------------------------------
+            -- Baseball Card: x1.5 mult for each uncommon joker.
+            -- In Balatro, this fires at the uncommon joker's position
+            -- (not at Baseball Card's own slot), even if the joker
+            -- has no scoring effect. Rarity 2 = Uncommon.
+            ---------------------------------------------------------
+            if has_baseball_card and joker.rarity == 2 then
+                mult = mult * 1.5
             end
 
             ---------------------------------------------------------
@@ -1646,6 +1671,12 @@ end
 
 local function extract_joker(joker)
     local ability = joker.ability or {}
+    -- Capture rarity for Baseball Card (uncommon = 2 in Balatro).
+    -- The rarity lives on the joker's center config, not ability.
+    local rarity = nil
+    if joker.config and joker.config.center and joker.config.center.rarity then
+        rarity = joker.config.center.rarity
+    end
     return {
         ability = {
             name        = ability.name,
@@ -1659,6 +1690,7 @@ local function extract_joker(joker)
             extra       = copy_scalars(ability.extra),
         },
         edition = extract_edition(joker.edition),
+        rarity  = rarity,
         debuff  = joker.debuff or nil,
     }
 end

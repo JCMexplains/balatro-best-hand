@@ -336,7 +336,10 @@ for _, path in ipairs(files) do
             miss = miss + 1
         else
             local actual = fx.actual_score
+            -- For very large scores, floating-point rounding in floor()
+            -- can produce ULP differences. Use relative tolerance.
             local hit_exact = (actual == ev_score)
+                or (actual ~= 0 and math.abs(actual - ev_score) / math.abs(actual) < 1e-9)
             local hit_any   = false
             local probabilistic = (n_prob + n_range) > 0
             if not hit_exact and probabilistic then
