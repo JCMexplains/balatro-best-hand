@@ -677,8 +677,9 @@ end
 -- properties rather than individual scoring cards.
 --
 -- ctx fields: hand_name, all_cards, played, num_played, suits
+-- state carries prob_idx / range_idx counters for Misprint etc.
 -------------------------------------------------------------------------
-local function eval_flat_jokers(resolved, chips, mult, ctx)
+local function eval_flat_jokers(resolved, chips, mult, ctx, state)
     for _, j in ipairs(resolved) do
         local ability = j.ability
         local name = j.name
@@ -718,6 +719,24 @@ local function eval_flat_jokers(resolved, chips, mult, ctx)
         -------------------------------------------
         -- Custom-logic jokers (unique conditions or game state)
         -------------------------------------------
+        elseif name == "Misprint" then
+            -- +X mult where X is uniform random integer in [min, max]
+            -- (defaults [0, 23]). EV mode: use midpoint. Exact mode:
+            -- range_config[i] is the specific integer to use. state
+            -- records {lo, hi} so F4 can enumerate every integer value.
+            local lo = (ability.extra and ability.extra.min) or 0
+            local hi = (ability.extra and ability.extra.max) or 23
+            state.range_idx = state.range_idx + 1
+            state.range_events[state.range_idx] = { lo, hi }
+            local val = state.range_config
+                and state.range_config[state.range_idx]
+            if val then
+                mult = mult + val
+            else
+                mult = mult + (lo + hi) / 2
+                state.used_ev = true
+            end
+
         elseif name == "Joker" then
             -- The basic Joker: flat +4 mult
             mult = mult + 4
@@ -846,15 +865,18 @@ end
 -- Follows Balatro's three-phase evaluation order (scoring cards,
 -- then held-in-hand, then flat jokers).
 --
--- prob_config (optional) pins each probabilistic roll to a specific outcome.
--- It is an array of booleans, one per probabilistic event in iteration order
--- (Lucky Card triggers and Bloodstone-on-Heart triggers). true = hit, anything
--- else = miss. When nil, the expected value is used (and used_ev flips true).
--- The 5th return value is prob_idx — the total number of probabilistic events
--- this hand consumed — which is what F4 needs to drive the 2^N enumeration.
--- Returns: hand_name, score, scoring_cards, used_ev, prob_count
+-- prob_config (optional) pins each boolean probabilistic roll to a specific
+-- outcome — an array one-per-event of Lucky Card / Bloodstone fires, true =
+-- hit, anything else = miss. Default: use EV and flip used_ev.
+-- range_config (optional) pins each range-valued probabilistic event (e.g.
+-- Misprint, which rolls a random integer mult in [min, max]) to a specific
+-- integer. Default: use the midpoint. F4 enumerates every integer value to
+-- get the exact discrete set of possible scores.
+-- Returns: hand_name, score, scoring_cards, used_ev, prob_count, range_events.
+-- range_events is an array of {lo, hi} bounds, one per range fire, so a
+-- caller can iterate the cartesian product to enumerate all outcomes.
 -------------------------------------------------------------------------
-local function score_combo(cards, all_cards, prob_config)
+local function score_combo(cards, all_cards, prob_config, range_config)
     -- Identify the poker hand type and look up base chips/mult from level
     local hand_name, _, _ = G.FUNCS.get_poker_hand_info(cards)
     if not hand_name then return nil, 0 end
@@ -913,6 +935,8 @@ local function score_combo(cards, all_cards, prob_config)
     local state = {
         photo_card = nil, used_ev = false,
         prob_idx = 0, prob_config = prob_config,
+        range_idx = 0, range_config = range_config,
+        range_events = {},
     }
 
     -------------------------------------------------
@@ -1045,12 +1069,12 @@ local function score_combo(cards, all_cards, prob_config)
         num_played  = #cards,
         suits       = suits,
     }
-    chips, mult = eval_flat_jokers(resolved, chips, mult, ctx)
+    chips, mult = eval_flat_jokers(resolved, chips, mult, ctx, state)
 
     -- Balatro floors the final score to an integer; mirror that so
     -- polychrome/holo chains producing fractional intermediates match.
     return hand_name, math.floor(chips * mult), scoring,
-        state.used_ev, state.prob_idx
+        state.used_ev, state.prob_idx, state.range_events
 end
 
 -------------------------------------------------------------------------
@@ -1449,13 +1473,13 @@ local function extract_game_state()
 end
 
 -- Compute the mod's predicted score for the exact hand being played.
--- Called with real Card objects, BEFORE Balatro mutates state. prob_config
--- (optional) pins each probabilistic roll; see score_combo for semantics.
-local function compute_predicted_score(played, held, prob_config)
+-- Called with real Card objects, BEFORE Balatro mutates state.
+-- prob_config / range_config (optional): see score_combo for semantics.
+local function compute_predicted_score(played, held, prob_config, range_config)
     local all = {}
     for _, c in ipairs(played) do all[#all + 1] = c end
     for _, c in ipairs(held)   do all[#all + 1] = c end
-    return score_combo(played, all, prob_config)
+    return score_combo(played, all, prob_config, range_config)
 end
 
 local function write_capture(fixture)
@@ -1509,25 +1533,43 @@ if G.FUNCS and G.FUNCS.evaluate_play then
                 local hn = G.FUNCS.get_poker_hand_info(G.play.cards)
                 fixture.hand_name = hn
 
-                local _, score, _, _, n_prob =
+                local _, score, _, _, n_prob, range_events =
                     compute_predicted_score(played, held)
                 fixture.predicted_score = score
+                n_prob = n_prob or 0
+                range_events = range_events or {}
 
-                -- If this hand has any probabilistic events (Lucky Cards
-                -- or Bloodstone × Hearts), brute-force every 2^N outcome
-                -- so the match check can distinguish RNG variance from a
-                -- real prediction bug. Capped at N <= 10 (1024 configs).
-                if n_prob and n_prob > 0 and n_prob <= 10 then
+                -- Enumerate every reachable score from the discrete
+                -- product of (Lucky/Bloodstone booleans) × (each Misprint
+                -- integer in its [min, max]). Bounded at 10k configs so
+                -- 1-2 Misprints + ≤10 boolean fires stays fast.
+                local range_total = 1
+                for _, iv in ipairs(range_events) do
+                    range_total = range_total * (iv[2] - iv[1] + 1)
+                end
+                local total_configs = (2 ^ n_prob) * range_total
+
+                if (n_prob + #range_events) > 0 and n_prob <= 10
+                    and total_configs <= 10000 then
                     local possible, seen = {}, {}
-                    for mask = 0, (2 ^ n_prob) - 1 do
-                        local config = {}
+                    for pmask = 0, (2 ^ n_prob) - 1 do
+                        local pcfg = {}
                         for i = 1, n_prob do
-                            config[i] = (math.floor(mask / (2 ^ (i - 1))) % 2) == 1
+                            pcfg[i] = (math.floor(pmask / (2 ^ (i - 1))) % 2) == 1
                         end
-                        local _, s = compute_predicted_score(played, held, config)
-                        if not seen[s] then
-                            seen[s] = true
-                            possible[#possible + 1] = s
+                        for ridx = 0, range_total - 1 do
+                            local rcfg, tmp = {}, ridx
+                            for i, iv in ipairs(range_events) do
+                                local span = iv[2] - iv[1] + 1
+                                rcfg[i] = iv[1] + (tmp % span)
+                                tmp = math.floor(tmp / span)
+                            end
+                            local _, s = compute_predicted_score(
+                                played, held, pcfg, rcfg)
+                            if not seen[s] then
+                                seen[s] = true
+                                possible[#possible + 1] = s
+                            end
                         end
                     end
                     table.sort(possible)
