@@ -98,6 +98,25 @@ local flat_add_mult_extra = {
     ["Gros Michel"] = true,
 }
 
+-------------------------------------------------------------------------
+-- Hybrid scoring deny list: jokers whose real calculate_joker must NOT
+-- be called during analysis because their joker_main calculate function
+-- has side effects (advances RNG, mutates state, etc.). These jokers
+-- fall back to the hardcoded reimplementation.
+--
+-- Misprint: calls pseudorandom() to roll a random mult, advancing the
+--           RNG seed. We handle it via the range_config enumeration.
+-- Blueprint / Brainstorm: delegate to their target's calculate_joker.
+--           If the target is a deny-listed joker, the side effect leaks
+--           through. Safer to resolve them manually via resolve_jokers()
+--           and fall back to hardcoded for the resolved target.
+-------------------------------------------------------------------------
+local joker_main_deny = {
+    ["Misprint"]    = true,
+    ["Blueprint"]   = true,
+    ["Brainstorm"]  = true,
+}
+
 -- Hand-type conditional jokers: fire when the played hand satisfies a
 -- containment table. op is one of "chips", "mult", or "xmult".
 local hand_conditional_jokers = {
@@ -877,8 +896,11 @@ end
 -- caller can iterate the cartesian product to enumerate all outcomes.
 -------------------------------------------------------------------------
 local function score_combo(cards, all_cards, prob_config, range_config)
-    -- Identify the poker hand type and look up base chips/mult from level
-    local hand_name, _, _ = G.FUNCS.get_poker_hand_info(cards)
+    -- Identify the poker hand type and look up base chips/mult from level.
+    -- Also capture poker_hands (the sub-hand containment table the game builds)
+    -- because the hybrid joker path passes it to real calculate_joker calls
+    -- for jokers that check "does this hand contain a Pair?" etc.
+    local hand_name, poker_hands, _ = G.FUNCS.get_poker_hand_info(cards)
     if not hand_name then return nil, 0 end
 
     -- With Four Fingers, Balatro may detect Straight Flush / Royal Flush
@@ -1060,6 +1082,27 @@ local function score_combo(cards, all_cards, prob_config, range_config)
 
     -------------------------------------------------
     -- Phase 3: flat joker effects fire L→R (after held-in-hand effects)
+    --
+    -- HYBRID APPROACH: for each joker, we first try calling the game's
+    -- own Card:calculate_joker with a joker_main context. This returns
+    -- a raw effect table like {mult_mod = 8} WITHOUT applying it to
+    -- globals (SMODS.trigger_effects does that, and we skip it). The
+    -- effect table tells us exactly what the joker would contribute —
+    -- even for jokers the mod hasn't explicitly reimplemented.
+    --
+    -- If calculate_joker isn't available (offline harness, where
+    -- "jokers" are plain tables without methods) or the joker is on the
+    -- deny list (Misprint: advances RNG; Blueprint/Brainstorm: may
+    -- delegate to a denied joker), we fall back to the hardcoded
+    -- reimplementation in eval_flat_jokers.
+    --
+    -- This means:
+    --   • In the live game, unknown jokers contribute their real value
+    --     instead of silently scoring 0.
+    --   • In the offline harness, known jokers still work via the
+    --     reimplementation; unknown ones score 0 (same as before).
+    --   • Deny-listed jokers always use the reimplementation, which
+    --     handles Misprint's range enumeration, etc.
     -------------------------------------------------
     local suits = count_suits(scoring)
     local ctx = {
@@ -1068,8 +1111,84 @@ local function score_combo(cards, all_cards, prob_config, range_config)
         played      = played,
         num_played  = #cards,
         suits       = suits,
+        -- These extra fields are passed to real calculate_joker calls.
+        -- poker_hands comes from get_poker_hand_info and maps each
+        -- hand type ("Pair", "Flush", …) to the cards that form it.
+        -- Jokers like Jolly Joker check poker_hands[self.ability.type]
+        -- to decide whether to fire.
+        poker_hands = poker_hands,
+        full_hand   = cards,
+        scoring_hand = scoring,
     }
-    chips, mult = eval_flat_jokers(resolved, chips, mult, ctx, state)
+
+    -- `resolved` (built in Phase 1 above) provides the fallback path's
+    -- pre-resolved ability/name/edition for Blueprint/Brainstorm jokers.
+
+    -- Iterate the real joker Card objects (not the resolved list) so
+    -- calculate_joker is called on the actual Card — Blueprint's own
+    -- calculate_joker handles delegation to its copy target internally.
+    -- We keep a parallel index into `resolved` for the fallback path,
+    -- which needs the pre-resolved ability/name/edition for Blueprint.
+    local resolved_idx = 0
+    for _, joker in ipairs(G.jokers and G.jokers.cards or {}) do
+        if not joker.debuff then
+            resolved_idx = resolved_idx + 1
+            local name = (joker.ability and joker.ability.name) or ""
+            local effect = nil
+
+            ---------------------------------------------------------
+            -- Hybrid path: call the game's real calculate_joker.
+            -- Only available when running inside Balatro (joker is a
+            -- real Card object with methods, not a plain fixture table).
+            -- Skipped for deny-list jokers whose calculate has side
+            -- effects we can't tolerate during read-only analysis.
+            ---------------------------------------------------------
+            if joker.calculate_joker
+                and not joker_main_deny[name]
+                and poker_hands then
+                effect = joker:calculate_joker({
+                    joker_main   = true,
+                    full_hand    = cards,
+                    scoring_hand = scoring,
+                    scoring_name = hand_name,
+                    poker_hands  = poker_hands,
+                    cardarea     = G.jokers,
+                })
+            end
+
+            if effect then
+                -------------------------------------------------------
+                -- Apply the returned effect table to our running
+                -- chips/mult accumulators. The keys mirror what SMODS
+                -- trigger_effects reads — we just do it manually
+                -- without the animation/event side effects.
+                --
+                -- chip_mod  → additive chips  (e.g. Banner +30×discards)
+                -- mult_mod  → additive mult   (e.g. Jolly Joker +8)
+                -- Xmult_mod → multiplicative  (e.g. The Tribe ×2)
+                -------------------------------------------------------
+                chips = chips + (effect.chip_mod or 0)
+                mult  = mult  + (effect.mult_mod or 0)
+                if effect.Xmult_mod then mult = mult * effect.Xmult_mod end
+                -- Joker edition (foil/holo/polychrome) is applied
+                -- separately — the game does this after trigger_effects
+                -- returns, so it's NOT included in the effect table.
+                chips, mult = apply_edition(joker.edition, chips, mult)
+            else
+                -------------------------------------------------------
+                -- Fallback: deny-listed, offline, or calculate returned
+                -- nil (joker doesn't fire for this hand). Use the
+                -- hardcoded reimplementation via eval_flat_jokers.
+                -- Pass only the matching resolved entry (a 1-element
+                -- list) so it handles Blueprint resolution + edition.
+                -------------------------------------------------------
+                local r = resolved[resolved_idx]
+                if r then
+                    chips, mult = eval_flat_jokers({r}, chips, mult, ctx, state)
+                end
+            end
+        end
+    end
 
     -- Balatro floors the final score to an integer; mirror that so
     -- polychrome/holo chains producing fractional intermediates match.
