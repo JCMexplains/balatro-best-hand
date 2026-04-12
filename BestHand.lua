@@ -312,8 +312,11 @@ end
 --   e.g. Red Seal (×2) + Hack (×2) on a 3 → 4 total triggers.
 -- `card_index` is the 1-based position in the scoring card list.
 -- `is_held` selects held-in-hand retrigger sources (Mime, Red Seal).
+-- `resolved` is the Blueprint/Brainstorm-resolved joker list from
+-- resolve_jokers(). When provided, retrigger detection uses resolved
+-- names so Blueprint copies of retrigger jokers are counted.
 -------------------------------------------------------------------------
-local function get_triggers(card, card_index, is_held, pareidolia)
+local function get_triggers(card, card_index, is_held, pareidolia, resolved)
     local triggers = 1 -- base: every card fires at least once
 
     -- Red Seal doubles triggers (works on both played and held cards)
@@ -321,46 +324,59 @@ local function get_triggers(card, card_index, is_held, pareidolia)
         triggers = triggers * 2
     end
 
-    if not G.jokers or not G.jokers.cards then return triggers end
+    -- Use the resolved joker list if available (handles Blueprint/Brainstorm
+    -- copies of retrigger jokers). Fall back to raw G.jokers.cards for
+    -- backward compatibility with standalone trace tools.
+    local joker_names = nil
+    if resolved then
+        joker_names = {}
+        for _, j in ipairs(resolved) do
+            joker_names[#joker_names + 1] = j.name
+        end
+    else
+        if not G.jokers or not G.jokers.cards then return triggers end
+        joker_names = {}
+        for _, joker in ipairs(G.jokers.cards) do
+            if not joker.debuff then
+                joker_names[#joker_names + 1] =
+                    (joker.ability and joker.ability.name) or ""
+            end
+        end
+    end
 
     if not is_held then
         -- Retrigger jokers for played/scoring cards
-        for _, joker in ipairs(G.jokers.cards) do
-            if not joker.debuff then
-                local name = (joker.ability and joker.ability.name) or ""
-                if name == "Hack" then
-                    -- Retrigger cards ranked 2, 3, 4, or 5
-                    local id = card.base.id
-                    if id >= 2 and id <= 5 then triggers = triggers * 2 end
-                elseif name == "Sock and Buskin" then
-                    -- Retrigger face cards (J=11, Q=12, K=13).
-                    -- Pareidolia makes every card count as face.
-                    local is_face = pareidolia
-                        or (card.base.id >= 11 and card.base.id <= 13)
-                    if is_face then triggers = triggers * 2 end
-                elseif name == "Hanging Chad" then
-                    -- The first scoring card fires 3 total times (+2 retriggers)
-                    if card_index == 1 then triggers = triggers * 3 end
-                elseif name == "Dusk" then
-                    -- Retrigger all cards on the final hand of the round.
-                    -- The game decrements hands_left before scoring, so
-                    -- "last hand" is hands_left == 0 at evaluation time.
-                    local hands_left = (G.GAME.current_round
-                        and G.GAME.current_round.hands_left) or 0
-                    if hands_left == 0 then triggers = triggers * 2 end
-                elseif name == "Seltzer" then
-                    -- Retrigger all scored cards (temporary consumable effect)
-                    triggers = triggers * 2
-                end
+        for _, name in ipairs(joker_names) do
+            if name == "Hack" then
+                -- Retrigger cards ranked 2, 3, 4, or 5
+                local id = card.base.id
+                if id >= 2 and id <= 5 then triggers = triggers * 2 end
+            elseif name == "Sock and Buskin" then
+                -- Retrigger face cards (J=11, Q=12, K=13).
+                -- Pareidolia makes every card count as face.
+                local is_face = pareidolia
+                    or (card.base.id >= 11 and card.base.id <= 13)
+                if is_face then triggers = triggers * 2 end
+            elseif name == "Hanging Chad" then
+                -- The first scoring card fires 3 total times (+2 retriggers)
+                if card_index == 1 then triggers = triggers * 3 end
+            elseif name == "Dusk" then
+                -- Retrigger all cards on the final hand of the round.
+                -- The game decrements hands_left before scoring, so
+                -- "last hand" is hands_left == 0 at evaluation time.
+                local hands_left = (G.GAME.current_round
+                    and G.GAME.current_round.hands_left) or 0
+                if hands_left == 0 then triggers = triggers * 2 end
+            elseif name == "Seltzer" then
+                -- Retrigger all scored cards (temporary consumable effect)
+                triggers = triggers * 2
             end
         end
     else
         -- Retrigger jokers for held-in-hand cards
-        for _, joker in ipairs(G.jokers.cards) do
-            if not joker.debuff then
-                if (joker.ability and joker.ability.name) == "Mime" then
-                    triggers = triggers * 2
-                end
+        for _, name in ipairs(joker_names) do
+            if name == "Mime" then
+                triggers = triggers * 2
             end
         end
     end
@@ -1032,7 +1048,7 @@ local function score_combo(cards, all_cards, prob_config, range_config)
     -------------------------------------------------
     for idx, card in ipairs(scoring) do
         if not card.debuff then
-            local triggers = get_triggers(card, idx, false, pareidolia)
+            local triggers = get_triggers(card, idx, false, pareidolia, resolved)
             for _ = 1, triggers do
                 -- Base chip value from card rank (Stone Cards have nominal=0)
                 chips = chips + (card.base.nominal or 0)
@@ -1119,14 +1135,13 @@ local function score_combo(cards, all_cards, prob_config, range_config)
             -- Only process cards that have at least one held-in-hand effect
             if is_steel or (has_baron and is_king)
                 or (has_shoot_moon and is_queen) then
-                local triggers = get_triggers(card, 0, true, pareidolia)
+                local triggers = get_triggers(card, 0, true, pareidolia, resolved)
                 for _ = 1, triggers do
                     -- Steel Card enhancement: x1.5 mult per trigger.
-                    -- Edition on the held Steel card fires per trigger
-                    -- too — e.g. polychrome adds another x1.5 on top.
+                    -- Card editions do NOT fire for held-in-hand effects;
+                    -- they only fire in Phase 1 for scored cards.
                     if is_steel then
                         mult = mult * 1.5
-                        chips, mult = apply_edition(card.edition, chips, mult)
                     end
                     -- Baron: x1.5 mult per held King, per Baron instance
                     if has_baron and is_king then
@@ -1701,6 +1716,18 @@ local function extract_game_state()
 
     if G.deck and G.deck.cards then
         game.deck_remaining = #G.deck.cards
+    end
+
+    -- Count Steel Cards across the full deck (G.playing_cards) so the
+    -- offline harness can reconstruct the correct total for Steel Joker.
+    if G.playing_cards then
+        local steel_count = 0
+        for _, c in ipairs(G.playing_cards) do
+            if c.ability and c.ability.name == "Steel Card" then
+                steel_count = steel_count + 1
+            end
+        end
+        game.steel_card_count = steel_count
     end
 
     return game

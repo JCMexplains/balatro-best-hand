@@ -98,7 +98,9 @@ local function detect_hand(cards)
         end
         return "Straight Flush", nil, {}
     end
+    if c1 == 5 and is_flush then return "Flush Five", nil, {} end
     if c1 == 5 then return "Five of a Kind", nil, {} end
+    if c1 == 3 and c2 == 2 and is_flush then return "Flush House", nil, {} end
     if c1 == 4 then return "Four of a Kind", nil, {} end
     if c1 == 3 and c2 == 2 then return "Full House", nil, {} end
     if is_flush then return "Flush", nil, {} end
@@ -177,6 +179,26 @@ for _, c in ipairs(held)   do all_cards[#all_cards + 1] = c end
 
 G.playing_cards = {}
 for _, c in ipairs(all_cards) do G.playing_cards[#G.playing_cards+1] = c end
+
+-- Pad G.playing_cards with dummy Steel Cards if the capture recorded
+-- the full-deck Steel Card count (for Steel Joker).
+local steel_target = fx.game and fx.game.steel_card_count
+if steel_target then
+    local steel_have = 0
+    for _, c in ipairs(G.playing_cards) do
+        if c.ability and c.ability.name == "Steel Card" then
+            steel_have = steel_have + 1
+        end
+    end
+    for _ = 1, steel_target - steel_have do
+        G.playing_cards[#G.playing_cards + 1] = {
+            ability = { name = "Steel Card" },
+            base = { id = 0, suit = "Spades", nominal = 0 },
+            debuff = false,
+        }
+    end
+end
+
 G.deck.cards = {}
 for i = 1, (fx.game.deck_remaining or 0) do G.deck.cards[i] = {} end
 
@@ -320,7 +342,6 @@ for _, card in ipairs(all_cards) do
             for _ = 1, triggers do
                 if is_steel then
                     mult = mult * 1.5
-                    chips, mult = _BH.apply_edition(card.edition, chips, mult)
                 end
                 if has_baron and is_king then
                     for _ = 1, baron_count do mult = mult * 1.5 end
