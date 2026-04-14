@@ -1533,9 +1533,9 @@ SMODS.Keybind({
     key_pressed = "f3",
     action = function(self)
         local out = {}
-        local card = G.hand.cards[1]
+        local card = G.hand and G.hand.cards and G.hand.cards[1]
         local function dump(t, prefix, depth)
-            if depth > 4 then return end
+            if depth > 4 or type(t) ~= "table" then return end
             for k, v in pairs(t) do
                 local key = prefix .. "." .. tostring(k)
                 if type(v) == "table" then
@@ -1545,7 +1545,12 @@ SMODS.Keybind({
                 end
             end
         end
-        dump(card, "card", 0)
+        if card then
+            dump(card, "card", 0)
+        else
+            print("F3: no hand to dump — press F3 during a round, while cards are in your hand")
+            return
+        end
         if G.jokers and G.jokers.cards then
             for i, joker in ipairs(G.jokers.cards) do
                 dump(joker, "joker[" .. i .. "]", 0)
