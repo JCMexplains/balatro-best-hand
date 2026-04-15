@@ -396,6 +396,33 @@ local function is_flint_active()
 end
 
 -------------------------------------------------------------------------
+-- Boss-blind hand debuffs that zero the entire score:
+--   The Eye   — each hand type can only score once per round.
+--   The Mouth — only one hand type may score per round.
+-- Balatro increments played_this_round at the top of evaluate_play, so
+-- analysis runs against the pre-increment snapshot: if any matching
+-- hand already has played_this_round > 0, playing it again zeroes out.
+-------------------------------------------------------------------------
+local function is_hand_debuffed_by_blind(hand_name)
+    if not G.GAME or not G.GAME.blind or G.GAME.blind.disabled then
+        return false
+    end
+    local bname = G.GAME.blind.name
+    local hands = G.GAME.hands or {}
+    if bname == "The Eye" then
+        local h = hands[hand_name]
+        return h and (h.played_this_round or 0) > 0
+    elseif bname == "The Mouth" then
+        for name, info in pairs(hands) do
+            if name ~= hand_name and (info.played_this_round or 0) > 0 then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-------------------------------------------------------------------------
 -- Determine which cards actually score for a given hand type.
 -- Kicker cards (e.g. the 5th card in Two Pair) do NOT score,
 -- UNLESS they have Stone Card enhancement (Stone Cards always score).
@@ -1004,6 +1031,12 @@ local function score_combo(cards, all_cards, prob_config, range_config)
     local hand_info = G.GAME.hands[hand_name]
     if not hand_info then return nil, 0 end
 
+    -- Boss-blind hand debuff (The Eye / The Mouth): entire score is
+    -- zeroed before Balatro runs Phase 1, so short-circuit here.
+    if is_hand_debuffed_by_blind(hand_name) then
+        return hand_name, 0, {}, false, 0, {}
+    end
+
     local chips = hand_info.chips
     local mult = hand_info.mult
 
@@ -1336,9 +1369,17 @@ local function score_combo(cards, all_cards, prob_config, range_config)
             local ability = joker.ability or {}
             local extra   = ability.extra or {}
             if name == "Wee Joker" then
-                -- Gains +chip_mod chips per scored card in context.before.
-                -- Default chip_mod = 8. Scored cards = #scoring.
-                chips = chips + (extra.chip_mod or 8) * #scoring
+                -- Grows +chip_mod per scored 2 (context.individual on id==2),
+                -- once per trigger so retriggers (Seltzer, Hack, Red Seal,
+                -- etc.) on a 2 each scale it again. Default chip_mod = 8.
+                local twos_triggers = 0
+                for idx, c in ipairs(scoring) do
+                    if c.base.id == 2 then
+                        twos_triggers = twos_triggers
+                            + get_triggers(c, idx, false, pareidolia, resolved)
+                    end
+                end
+                chips = chips + (extra.chip_mod or 8) * twos_triggers
             elseif name == "Runner" then
                 -- Gains +chip_mod chips in context.before if the played
                 -- hand contains a Straight. Default chip_mod = 15.
