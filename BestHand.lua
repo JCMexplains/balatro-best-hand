@@ -1587,20 +1587,40 @@ end
 -- Detect whether the joker + card configuration makes scoring ORDER
 -- matter. Returns true when at least one of these conditions holds:
 --
---   Hanging Chad        +2 retriggers on the leftmost scoring card
---   Photograph          ×2 mult on the first face card scored
---   Ancient Joker       ×1.5 per card matching the active suit
---   Bloodstone          ×1.5 (EV ×1.25) per scored Heart
---   Triboulet           ×2 per scored K or Q
---   The Idol            ×2 per card matching the active rank+suit
---   Polychrome edition  ×1.5 per trigger on that card
---   Glass Card          ×2 mult per trigger
+--   Joker / card        Why position matters
+--   ─────────────────── ──────────────────────────────────────────────────
+--   Hanging Chad        Gives +2 retriggers to the LEFTMOST scoring card
+--                       only. Put the highest-value card first so it fires
+--                       three times instead of once.
 --
--- All of the above are per-card ×mult effects that fire at the card's
--- position in the scoring loop. Firing later (rightmost) means more
--- +mult has already accumulated, so the multiplication is larger.
--- Hanging Chad is special: the leftmost card gets +2 extra triggers,
--- so the most valuable card should go first.
+--   Photograph          ×2 mult fires when the FIRST face card is scored.
+--                       Put non-face cards to the left so more +mult has
+--                       accumulated before the ×2 fires. With Hanging Chad
+--                       on the same face card, each of its 3 triggers
+--                       re-fires Photograph → ×2 × ×2 × ×2 = ×8 total.
+--
+--   Ancient Joker       ×1.5 fires each time a card of the active suit is
+--   Bloodstone          scored (×1.25 EV for Bloodstone Hearts). Because
+--   Triboulet           ×mult compounds — mult × 1.5 × 1.5 is bigger when
+--   The Idol            the base it starts from is already high — you want
+--                       these cards rightmost so preceding +mult additions
+--                       are inside the multiplication, not outside it.
+--                       (Triboulet: ×2 per K/Q. The Idol: ×2 per the
+--                       active rank+suit card.)
+--
+--   Polychrome edition  ×1.5 fires mid-hand when that specific card is
+--   (on a scored card)  scored. Same logic: put it rightmost so earlier
+--                       +mult contributions are captured by the ×1.5.
+--
+--   Glass Card          ×2 mult fires on every trigger of that card
+--                       (base trigger + retriggers). Same rightmost rule.
+--
+-- The general principle: Balatro's final score is chips × mult, and mult
+-- is built up additively (+mult) and multiplicatively (×mult) as cards
+-- are scored left to right. A ×mult applied to a mult of 20 is worth
+-- twice as much as one applied to a mult of 10. So ×mult effects benefit
+-- from firing LATE (after +mult has accumulated), while Hanging Chad's
+-- retrigger benefit scales with the value of the card it targets.
 -------------------------------------------------------------------------
 local function needs_ordering(resolved, scoring)
     if not scoring or #scoring <= 1 then return false end
