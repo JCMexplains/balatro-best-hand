@@ -11,6 +11,36 @@
 -------------------------------------------------------------------------
 
 -------------------------------------------------------------------------
+-- Version tracking: read git commit hash at load time so captures
+-- record which code version generated them. Falls back to "unknown"
+-- if the .git directory isn't readable (e.g. installed from a zip).
+-------------------------------------------------------------------------
+local MOD_VERSION = "unknown"
+do
+    -- Try to read the git HEAD ref from the mod directory.
+    -- SMODS.current_mod.path gives us the mod's root directory.
+    local mod_path = (SMODS.current_mod and SMODS.current_mod.path) or ""
+    local head_f = io.open(mod_path .. ".git/HEAD", "r")
+    if head_f then
+        local head = head_f:read("*l")
+        head_f:close()
+        if head then
+            local ref = head:match("^ref: (.+)")
+            if ref then
+                local ref_f = io.open(mod_path .. ".git/" .. ref, "r")
+                if ref_f then
+                    MOD_VERSION = (ref_f:read("*l") or "unknown"):sub(1, 7)
+                    ref_f:close()
+                end
+            else
+                -- Detached HEAD: raw hash
+                MOD_VERSION = head:sub(1, 7)
+            end
+        end
+    end
+end
+
+-------------------------------------------------------------------------
 -- Utility: generate all k-element subsets of a list
 -------------------------------------------------------------------------
 local function combinations(list, k)
@@ -193,44 +223,10 @@ local hand_conditional_jokers = {
 }
 
 -------------------------------------------------------------------------
--- suit_matches: does this card count as `target_suit`?
--- Wild Cards match every suit.
--------------------------------------------------------------------------
-local function suit_matches(card, target_suit)
-    if card.ability and card.ability.name == "Wild Card" then return true end
-    return card.base.suit == target_suit
-end
-
--------------------------------------------------------------------------
--- Count how many scoring cards match each suit (aggregate).
--- Wild Cards add +1 to every suit.
--- Used by flat jokers like Flower Pot that check aggregate suit presence.
--------------------------------------------------------------------------
-local function count_suits(cards)
-    local counts = { Hearts = 0, Diamonds = 0, Clubs = 0, Spades = 0 }
-    for _, card in ipairs(cards) do
-        if not card.debuff then
-            if card.ability and card.ability.name == "Wild Card" then
-                for s in pairs(counts) do counts[s] = counts[s] + 1 end
-            else
-                local suit = card.base.suit
-                if counts[suit] then counts[suit] = counts[suit] + 1 end
-            end
-        end
-    end
-    return counts
-end
-
--------------------------------------------------------------------------
--- Identify which cards participate in a flush pattern. Returns the
--- matching subset. Two wrinkles:
---   * Four Fingers: only 4 cards need to share a suit, so a 5-card
---     combo may contain a non-matching kicker.
---   * Smeared Joker: Hearts+Diamonds and Spades+Clubs each collapse
---     into a single virtual suit, so mixed-but-paired combos still
---     count all their cards as flush members.
--------------------------------------------------------------------------
 -- Paired suits for Smeared Joker: Hearts<->Diamonds, Spades<->Clubs.
+-- Defined early because suit_matches, count_suits, and get_flush_members
+-- all need it.
+-------------------------------------------------------------------------
 local smeared_pair = {
     Hearts = "Diamonds", Diamonds = "Hearts",
     Spades = "Clubs",    Clubs = "Spades",
@@ -247,33 +243,68 @@ local function has_smeared_joker()
     return false
 end
 
-local function get_flush_members(cards)
-    -- Smeared Joker merges Hearts+Diamonds and Spades+Clubs into single
-    -- virtual suits. Without this check, a 3d+2h combo (5-card flush
-    -- under Smeared) would only return 3 diamonds as members and the
-    -- 2 hearts would silently drop out of scoring.
-    local smeared = has_smeared_joker()
-    local function is_member(card, target)
-        if suit_matches(card, target) then return true end
-        if smeared and suit_matches(card, smeared_pair[target]) then
-            return true
-        end
-        return false
+-------------------------------------------------------------------------
+-- suit_matches: does this card count as `target_suit`?
+-- Wild Cards match every suit. Smeared Joker merges Hearts+Diamonds
+-- and Spades+Clubs into virtual suits, so a Diamond card counts as
+-- Hearts (and vice versa), and a Club card counts as Spades.
+-------------------------------------------------------------------------
+local function suit_matches(card, target_suit)
+    if card.ability and card.ability.name == "Wild Card" then return true end
+    if card.base.suit == target_suit then return true end
+    if has_smeared_joker() then
+        local partner = smeared_pair[target_suit]
+        if partner and card.base.suit == partner then return true end
     end
+    return false
+end
 
+-------------------------------------------------------------------------
+-- Count how many scoring cards match each suit (aggregate).
+-- Wild Cards add +1 to every suit.
+-- Used by flat jokers like Flower Pot that check aggregate suit presence.
+-------------------------------------------------------------------------
+local function count_suits(cards)
+    local counts = { Hearts = 0, Diamonds = 0, Clubs = 0, Spades = 0 }
+    for _, card in ipairs(cards) do
+        if not card.debuff then
+            -- suit_matches handles Wild Card (all suits) and Smeared
+            -- Joker (H+D, S+C merge), so iterate all four suits.
+            for s in pairs(counts) do
+                if suit_matches(card, s) then
+                    counts[s] = counts[s] + 1
+                end
+            end
+        end
+    end
+    return counts
+end
+
+-------------------------------------------------------------------------
+-- Identify which cards participate in a flush pattern. Returns the
+-- matching subset. Two wrinkles:
+--   * Four Fingers: only 4 cards need to share a suit, so a 5-card
+--     combo may contain a non-matching kicker.
+--   * Smeared Joker: Hearts+Diamonds and Spades+Clubs each collapse
+--     into a single virtual suit, so mixed-but-paired combos still
+--     count all their cards as flush members.
+-------------------------------------------------------------------------
+local function get_flush_members(cards)
+    -- suit_matches already handles Smeared Joker (H+D and S+C merge)
+    -- and Wild Card (matches every suit), so we just call it directly.
     local suits = {"Hearts", "Diamonds", "Clubs", "Spades"}
     local best_suit, best_count = nil, 0
     for _, suit in ipairs(suits) do
         local count = 0
         for _, card in ipairs(cards) do
-            if is_member(card, suit) then count = count + 1 end
+            if suit_matches(card, suit) then count = count + 1 end
         end
         if count > best_count then best_suit, best_count = suit, count end
     end
     if best_count >= #cards then return cards end
     local result = {}
     for _, card in ipairs(cards) do
-        if is_member(card, best_suit) then result[#result + 1] = card end
+        if suit_matches(card, best_suit) then result[#result + 1] = card end
     end
     return result
 end
@@ -387,6 +418,27 @@ local function get_triggers(card, card_index, is_held, pareidolia, resolved)
 
     return triggers
 end
+
+-------------------------------------------------------------------------
+-- Default per-level chip/mult increments for each hand type.
+-- Used as a fallback when G.GAME.hands[name].l_chips / .l_mult
+-- aren't available (e.g. old captures that predate the field).
+-------------------------------------------------------------------------
+local default_level_increments = {
+    ["High Card"]       = { l_chips = 10, l_mult = 1 },
+    ["Pair"]            = { l_chips = 15, l_mult = 1 },
+    ["Two Pair"]        = { l_chips = 20, l_mult = 1 },
+    ["Three of a Kind"] = { l_chips = 20, l_mult = 2 },
+    ["Straight"]        = { l_chips = 30, l_mult = 3 },
+    ["Flush"]           = { l_chips = 15, l_mult = 2 },
+    ["Full House"]      = { l_chips = 25, l_mult = 2 },
+    ["Four of a Kind"]  = { l_chips = 30, l_mult = 3 },
+    ["Straight Flush"]  = { l_chips = 40, l_mult = 4 },
+    ["Royal Flush"]     = { l_chips = 40, l_mult = 4 },
+    ["Five of a Kind"]  = { l_chips = 35, l_mult = 3 },
+    ["Flush House"]     = { l_chips = 40, l_mult = 4 },
+    ["Flush Five"]      = { l_chips = 40, l_mult = 4 },
+}
 
 -------------------------------------------------------------------------
 -- Check if The Flint boss blind is active (halves base chips and mult).
@@ -926,11 +978,14 @@ local function eval_flat_jokers(resolved, chips, mult, ctx, state)
             if all_dark then mult = mult * 3 end
 
         elseif name == "Raised Fist" then
-            -- +2× the rank of the lowest held-in-hand card
+            -- +2× the chip value of the lowest held-in-hand card.
+            -- Balatro uses nominal (chip value), not rank id — face cards
+            -- all have nominal 10, Ace has nominal 11.
             local lowest = math.huge
             for _, c in ipairs(ctx.all_cards) do
                 if not ctx.played[c] and not c.debuff then
-                    if c.base.id < lowest then lowest = c.base.id end
+                    local nom = c.base.nominal or c.base.id
+                    if nom < lowest then lowest = nom end
                 end
             end
             if lowest < math.huge then mult = mult + 2 * lowest end
@@ -1037,8 +1092,30 @@ local function score_combo(cards, all_cards, prob_config, range_config)
         return hand_name, 0, {}, false, 0, {}
     end
 
+    -- The Psychic boss blind: must play exactly 5 cards or score is 0.
+    if G.GAME and G.GAME.blind and G.GAME.blind.name == "The Psychic"
+        and not (G.GAME.blind.disabled)
+        and #cards < 5 then
+        return hand_name, 0, {}, false, 0, {}
+    end
+
     local chips = hand_info.chips
     local mult = hand_info.mult
+
+    -- The Arm boss blind lowers the played hand's level by 1.
+    -- This happens in context.before during evaluate_play, so the
+    -- snapshot sees the pre-Arm level. Subtract one level's worth
+    -- of chips/mult (stored as l_chips/l_mult on the hand info,
+    -- or fall back to the standard Balatro defaults).
+    if G.GAME and G.GAME.blind and G.GAME.blind.name == "The Arm"
+        and not (G.GAME.blind.disabled)
+        and (hand_info.level or 1) > 1 then
+        local defaults = default_level_increments[hand_name] or {}
+        local l_chips = hand_info.l_chips or defaults.l_chips or 0
+        local l_mult  = hand_info.l_mult  or defaults.l_mult  or 0
+        chips = chips - l_chips
+        mult  = mult  - l_mult
+    end
 
     -- The Flint boss blind halves the hand's base chips and mult
     if is_flint_active() then
@@ -1783,6 +1860,8 @@ local function extract_game_state()
                 level             = info.level,
                 chips             = info.chips,
                 mult              = info.mult,
+                l_chips           = info.l_chips,
+                l_mult            = info.l_mult,
                 played            = info.played,
                 played_this_round = info.played_this_round,
                 visible           = info.visible,
@@ -1889,6 +1968,7 @@ if G.FUNCS and G.FUNCS.evaluate_play then
                 for i, c in ipairs(G.hand.cards) do held[i]   = c end
 
                 fixture = {
+                    mod_version = MOD_VERSION,
                     played = extract_card_list(played),
                     held   = extract_card_list(held),
                     jokers = extract_joker_list(G.jokers.cards),
