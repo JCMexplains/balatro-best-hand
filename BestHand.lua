@@ -1386,6 +1386,17 @@ local function score_combo(cards, all_cards, prob_config, range_config)
                 -- Restore ability even if calculate_joker errored or
                 -- mutated — the snapshot is our safety net.
                 joker.ability = saved
+
+                -- Pre-increment correction: Supernova returns
+                -- mult_mod = hands[name].played, but in the real play
+                -- Balatro bumps that counter at the top of evaluate_play
+                -- before calculate_joker reads it. Our analysis runs
+                -- pre-increment, so the returned value is short by 1.
+                -- Patch the effect before apply_edition so polychrome
+                -- Supernova still composes correctly.
+                if effect and name == "Supernova" then
+                    effect.mult_mod = (effect.mult_mod or 0) + 1
+                end
             end
 
             if effect then
