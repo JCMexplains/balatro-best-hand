@@ -1697,7 +1697,10 @@ local function analyze_hand()
         if #cards >= size then
             for _, combo in ipairs(combinations(cards, size)) do
                 local name, score, scoring, used_ev = score_combo(combo, cards)
-                if name then
+                -- Skip zero-score combos (boss-blind debuffs like The Eye /
+                -- The Mouth zero the whole hand; The Psychic zeros any combo
+                -- with fewer than 5 cards). These are never worth showing.
+                if name and score > 0 then
                     -- When order-sensitive jokers are active, try every
                     -- permutation of the scoring cards to find the best
                     -- play order.  Non-scoring kicker cards go to the
@@ -1798,12 +1801,18 @@ SMODS.Keybind({
         end
         for i, r in ipairs(results) do
             -- Format: "1. Flush (Ah, Kh, Qh + 7h, 3h)  ~ 1234 points"
-            -- r.cards is in optimal play order when order matters;
-            -- always use it so the displayed order IS the advice.
-            local play_str = cards_label(r.cards)
-            if #r.play > #r.cards then
-                play_str = play_str
-                    .. " + " .. cards_label_exclude(r.play, r.cards)
+            -- r.cards holds the scoring cards in optimal play order.
+            -- Fall back to r.play when r.cards is empty (shouldn't
+            -- happen after the score>0 filter, but defensive either way).
+            local play_str
+            if #r.cards > 0 then
+                play_str = cards_label(r.cards)
+                if #r.play > #r.cards then
+                    play_str = play_str
+                        .. " + " .. cards_label_exclude(r.play, r.cards)
+                end
+            else
+                play_str = cards_label(r.play)
             end
             local line = i .. ". " .. r.name
                 .. " (" .. play_str .. ")     ~ "
