@@ -1,6 +1,16 @@
 -------------------------------------------------------------------------
 -- BestHand.lua — Balatro mod that analyzes your hand and recommends
--- the highest-scoring play. Press F2 to evaluate; F3 to dump card data.
+-- the highest-scoring play.
+--
+-- Keybinds:
+--   F2  Evaluate the current hand: print the top 3 scoring plays,
+--       card combos, estimated points, and (when order matters) the
+--       optimal left-to-right card arrangement to drag into before
+--       playing.
+--   F3  Dump the first hand card + all jokers + G.GAME.current_round
+--       to card_dump.txt in the Balatro save directory.
+--   F4  Toggle fixture capture on/off (on by default — see bottom of
+--       this file for the regression harness).
 --
 -- Scoring follows Balatro's evaluation order:
 --   Phase 1: Each scoring card fires L→R (with retriggers):
@@ -371,8 +381,10 @@ end
 
 -------------------------------------------------------------------------
 -- get_triggers: total number of times a card fires (always ≥ 1).
--- Retrigger sources stack MULTIPLICATIVELY in Balatro:
---   e.g. Red Seal (×2) + Hack (×2) on a 3 → 4 total triggers.
+-- Retrigger sources stack ADDITIVELY in Balatro: each source adds
+-- extra repetitions. Red Seal +1, Hanging Chad +2 on the first card,
+-- Hack / Sock and Buskin / Dusk / Seltzer +1 each.
+-- e.g. Red Seal + Hack on a 3 → 1 base + 1 + 1 = 3 total triggers.
 -- `card_index` is the 1-based position in the scoring card list.
 -- `is_held` selects held-in-hand retrigger sources (Mime, Red Seal).
 -- `resolved` is the Blueprint/Brainstorm-resolved joker list from
@@ -381,10 +393,6 @@ end
 -------------------------------------------------------------------------
 local function get_triggers(card, card_index, is_held, pareidolia, resolved)
     local triggers = 1 -- base: every card fires at least once
-
-    -- Retrigger sources are ADDITIVE in Balatro: each source adds extra
-    -- repetitions rather than multiplying the total. Red Seal +1, Hanging
-    -- Chad +2 on the first card, Hack/Sock and Buskin/Dusk/Seltzer +1, etc.
 
     -- Red Seal: +1 retrigger (works on both played and held cards)
     if card.seal == "Red" then

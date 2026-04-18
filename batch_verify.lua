@@ -1,6 +1,12 @@
 -- batch_verify.lua — replay every saved capture through the real
--- BestHand.lua score_combo with 2^N probabilistic enumeration, and
--- report MATCH / MATCH-via-variance / MISS.
+-- BestHand.lua score_combo and report ok / ok(var) / MISS.
+--
+-- For each capture the harness enumerates every reachable score from
+-- the cartesian product of boolean probabilistic events (Lucky Card,
+-- Bloodstone) × integer range events (Misprint), bounded at 10,000
+-- configurations. A capture passes ("ok") if the game's actual score
+-- equals the EV prediction exactly, or ("ok(var)") if it falls within
+-- the enumerated set.
 --
 -- Usage: lua batch_verify.lua [captures_dir]
 -- Default captures_dir: ../../best_hand_captures (Balatro save dir

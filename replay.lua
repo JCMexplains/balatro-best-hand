@@ -1,6 +1,12 @@
--- replay.lua — load the real BestHand.lua and run score_combo on
--- capture_20260411_082018_1.lua, with the actual helpers (not a
--- Python re-implementation).
+-- replay.lua — one-off debugging script that loads the real BestHand.lua
+-- and runs score_combo on a hard-coded fixture, then prints a full
+-- phase-by-phase trace using the real internal helpers.
+--
+-- This file is NOT a general tool — it exists as a reference for
+-- hand-crafted replay sessions when batch_verify.lua and trace_one.lua
+-- aren't enough. The fixture below is capture_20260411_082018_1.lua
+-- (5h, 4h, Kd(Mult), Qd(Lucky), Jd(Lucky) as a Smeared Flush with
+-- To Do List / Cartomancer / Walkie Talkie / Crafty(holo) / Driver's Lic.).
 
 -------------------------------------------------------------------------
 -- Stub the Balatro globals that BestHand.lua touches at load time.
@@ -26,9 +32,9 @@ G = {
     deck         = { cards = {} },
 }
 
--- Minimal poker-hand detector — only has to handle this fixture (Flush).
--- Called from score_combo at the top and (for Straight/SF/RF) inside
--- get_straight_members. For this fixture it's only the top call.
+-- Fixture-specific poker-hand detector (Flush only).
+-- This stub is just enough for the hard-coded fixture above.
+-- batch_verify.lua and trace_one.lua use a full detect_hand instead.
 function G.FUNCS.get_poker_hand_info(cards)
     if not cards or #cards == 0 then return "High Card", nil, {} end
     if #cards == 5 then
