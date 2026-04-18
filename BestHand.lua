@@ -61,6 +61,38 @@ local function combinations(list, k)
 end
 
 -------------------------------------------------------------------------
+-- Utility: generate all permutations of a list (Heap's algorithm).
+-- For scoring-card sets of size N ≤ 5 this produces at most 120 entries,
+-- which is trivially fast even called dozens of times per F2 press.
+-------------------------------------------------------------------------
+local function permutations(t)
+    local n = #t
+    if n <= 1 then return {{unpack(t)}} end
+    local result = {}
+    local arr = {unpack(t)}
+    local c   = {}
+    for i = 1, n do c[i] = 1 end
+    result[#result + 1] = {unpack(arr)}
+    local i = 2
+    while i <= n do
+        if c[i] < i then
+            if i % 2 == 1 then
+                arr[1], arr[i] = arr[i], arr[1]
+            else
+                arr[c[i]], arr[i] = arr[i], arr[c[i]]
+            end
+            result[#result + 1] = {unpack(arr)}
+            c[i] = c[i] + 1
+            i = 2
+        else
+            c[i] = 1
+            i = i + 1
+        end
+    end
+    return result
+end
+
+-------------------------------------------------------------------------
 -- Hand-type containment tables
 -- A Full House "contains" both a Pair and Three of a Kind, etc.
 -- Used by conditional jokers like Jolly Joker ("if hand contains a Pair").
@@ -1552,6 +1584,81 @@ local function cards_label_exclude(cards, exclude)
 end
 
 -------------------------------------------------------------------------
+-- Detect whether the joker + card configuration makes scoring ORDER
+-- matter. Returns true when at least one of these conditions holds:
+--
+--   Hanging Chad        +2 retriggers on the leftmost scoring card
+--   Photograph          ×2 mult on the first face card scored
+--   Ancient Joker       ×1.5 per card matching the active suit
+--   Bloodstone          ×1.5 (EV ×1.25) per scored Heart
+--   Triboulet           ×2 per scored K or Q
+--   The Idol            ×2 per card matching the active rank+suit
+--   Polychrome edition  ×1.5 per trigger on that card
+--   Glass Card          ×2 mult per trigger
+--
+-- All of the above are per-card ×mult effects that fire at the card's
+-- position in the scoring loop. Firing later (rightmost) means more
+-- +mult has already accumulated, so the multiplication is larger.
+-- Hanging Chad is special: the leftmost card gets +2 extra triggers,
+-- so the most valuable card should go first.
+-------------------------------------------------------------------------
+local function needs_ordering(resolved, scoring)
+    if not scoring or #scoring <= 1 then return false end
+
+    local pareidolia = false
+    for _, j in ipairs(resolved) do
+        if j.name == "Pareidolia" then pareidolia = true; break end
+    end
+
+    for _, j in ipairs(resolved) do
+        local name = j.name
+
+        if name == "Hanging Chad" then return true end
+
+        if name == "Photograph" then
+            for _, c in ipairs(scoring) do
+                if pareidolia or (c.base.id >= 11 and c.base.id <= 13) then
+                    return true
+                end
+            end
+        end
+
+        if name == "Ancient Joker" then return true end
+
+        if name == "Bloodstone" then
+            for _, c in ipairs(scoring) do
+                if c.base.suit == "Hearts" then return true end
+            end
+        end
+
+        if name == "Triboulet" then
+            for _, c in ipairs(scoring) do
+                if c.base.id == 12 or c.base.id == 13 then return true end
+            end
+        end
+
+        if name == "The Idol" then
+            local ic = G.GAME.current_round
+                and G.GAME.current_round.idol_card
+            if ic then
+                for _, c in ipairs(scoring) do
+                    if c.base.id == ic.id and c.base.suit == ic.suit then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+
+    for _, c in ipairs(scoring) do
+        if c.edition and c.edition.polychrome then return true end
+        if c.ability and c.ability.name == "Glass Card" then return true end
+    end
+
+    return false
+end
+
+-------------------------------------------------------------------------
 -- Analyze the current hand: try every possible combo (sizes 5→1),
 -- score each one, and return the top 3 distinct hand types.
 -------------------------------------------------------------------------
@@ -1560,6 +1667,10 @@ local function analyze_hand()
     local cards = G.hand.cards
     if #cards == 0 then return nil end
 
+    -- Resolve Blueprint/Brainstorm once for needs_ordering checks.
+    -- score_combo() re-resolves internally; this is just for detection.
+    local resolved = resolve_jokers()
+
     -- Evaluate every possible combo of every size
     local best = {}
     for size = 5, 1, -1 do
@@ -1567,10 +1678,48 @@ local function analyze_hand()
             for _, combo in ipairs(combinations(cards, size)) do
                 local name, score, scoring, used_ev = score_combo(combo, cards)
                 if name then
+                    -- When order-sensitive jokers are active, try every
+                    -- permutation of the scoring cards to find the best
+                    -- play order.  Non-scoring kicker cards go to the
+                    -- held-in-hand phase regardless of slot, so only
+                    -- scoring card order needs to be explored.
+                    local optimal_order = nil
+                    if needs_ordering(resolved, scoring) then
+                        local scoring_set = {}
+                        for _, c in ipairs(scoring) do
+                            scoring_set[c] = true
+                        end
+                        local non_scoring = {}
+                        for _, c in ipairs(combo) do
+                            if not scoring_set[c] then
+                                non_scoring[#non_scoring + 1] = c
+                            end
+                        end
+                        for _, perm in ipairs(permutations(scoring)) do
+                            -- Scoring cards first (in permuted order),
+                            -- then kickers — get_scoring_cards preserves
+                            -- left-to-right order from the combo we pass.
+                            local reordered = {unpack(perm)}
+                            for _, c in ipairs(non_scoring) do
+                                reordered[#reordered + 1] = c
+                            end
+                            local _, ps, psc, pev =
+                                score_combo(reordered, cards)
+                            if ps > score then
+                                score         = ps
+                                scoring       = psc
+                                used_ev       = pev
+                                optimal_order = perm
+                            end
+                        end
+                    end
                     best[#best + 1] = {
-                        name = name, score = score,
-                        cards = scoring, play = combo,
-                        used_ev = used_ev,
+                        name          = name,
+                        score         = score,
+                        cards         = scoring,
+                        play          = combo,
+                        used_ev       = used_ev,
+                        optimal_order = optimal_order,
                     }
                 end
             end
@@ -1629,9 +1778,11 @@ SMODS.Keybind({
         end
         for i, r in ipairs(results) do
             -- Format: "1. Flush (Ah, Kh, Qh + 7h, 3h)  ~ 1234 points"
-            local play_str = cards_label(r.play)
+            -- r.cards is in optimal play order when order matters;
+            -- always use it so the displayed order IS the advice.
+            local play_str = cards_label(r.cards)
             if #r.play > #r.cards then
-                play_str = cards_label(r.cards)
+                play_str = play_str
                     .. " + " .. cards_label_exclude(r.play, r.cards)
             end
             local line = i .. ". " .. r.name
@@ -1640,6 +1791,10 @@ SMODS.Keybind({
             -- Mark scores that include expected-value approximations
             -- (Lucky Card enhancements, Bloodstone joker)
             if r.used_ev then line = line .. " (expected value)" end
+            -- Note when a non-default scoring order boosts the score
+            if r.optimal_order then
+                line = line .. "  ← drag scoring cards into this order"
+            end
             -- Show tied alternatives if any
             if r.alts and #r.alts > 0 then
                 local alt_labels = {}
