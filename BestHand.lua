@@ -1695,7 +1695,7 @@ SMODS.Keybind({
 -- are the oracle for offline regression tests — the game itself is the
 -- ground truth, not hand-traced expected values.
 --
--- Toggle with F4 (off by default). Captures go to
+-- Toggle with F4 (on by default). Captures go to
 --   <save>/best_hand_captures/capture_<timestamp>_<n>.lua
 -- Each file is a Lua literal loadable with dofile():
 --   return { played=..., held=..., jokers=..., game=...,
@@ -1709,7 +1709,7 @@ SMODS.Keybind({
 -- counters at the top of evaluate_play before scoring with them.
 -------------------------------------------------------------------------
 
-local capture_enabled = false
+local capture_enabled = true
 local capture_dir = "best_hand_captures"
 
 -- Serialize a plain Lua value as a Lua literal. Not general-purpose:
@@ -2032,12 +2032,13 @@ if G.FUNCS and G.FUNCS.evaluate_play then
             local ok, err = pcall(function()
                 fixture.actual_score = math.floor(SMODS.calculate_round_score())
 
+                local matched = false
                 if fixture.predicted_score then
                     local actual = fixture.actual_score
                     local possible = fixture.possible_scores
                     local hn = tostring(fixture.hand_name or "?")
 
-                    local matched = (actual == fixture.predicted_score)
+                    matched = (actual == fixture.predicted_score)
                     if not matched and possible then
                         for _, s in ipairs(possible) do
                             if s == actual then matched = true; break end
@@ -2072,7 +2073,9 @@ if G.FUNCS and G.FUNCS.evaluate_play then
                         tag))
                 end
 
-                write_capture(fixture)
+                if fixture.predicted_score and not matched then
+                    write_capture(fixture)
+                end
             end)
             if not ok then
                 print("[BestHand] capture post-error: " .. tostring(err))
