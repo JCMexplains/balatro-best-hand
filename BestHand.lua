@@ -1977,6 +1977,11 @@ if G.FUNCS and G.FUNCS.evaluate_play then
 
                 local hn = G.FUNCS.get_poker_hand_info(G.play.cards)
                 fixture.hand_name = hn
+                -- Must snapshot pre-evaluate_play: The Eye's check reads
+                -- played_this_round, which Balatro increments during
+                -- evaluate_play — a post-hook read would false-positive
+                -- on every Eye play.
+                fixture.debuffed_by_blind = is_hand_debuffed_by_blind(hn)
 
                 local _, score, _, _, n_prob, range_events =
                     compute_predicted_score(played, held)
@@ -2031,6 +2036,19 @@ if G.FUNCS and G.FUNCS.evaluate_play then
         if fixture then
             local ok, err = pcall(function()
                 fixture.actual_score = math.floor(SMODS.calculate_round_score())
+
+                -- When the blind zeroes the hand (The Eye / The Mouth),
+                -- Balatro's evaluate_play early-exits without touching
+                -- chip_total, so SMODS.calculate_round_score() returns a
+                -- stale prior value rather than 0. Skip the compare here —
+                -- our predicted 0 is already correct.
+                if fixture.debuffed_by_blind then
+                    print(string.format(
+                        "[BestHand] %s: debuffed by %s — skipping compare (actual_score unreliable)",
+                        tostring(fixture.hand_name or "?"),
+                        (G.GAME and G.GAME.blind and G.GAME.blind.name) or "boss"))
+                    return
+                end
 
                 local matched = false
                 if fixture.predicted_score then
