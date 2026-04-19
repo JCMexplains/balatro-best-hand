@@ -11,6 +11,8 @@
 --       to card_dump.txt in the Balatro save directory.
 --   F4  Toggle fixture capture on/off (on by default — see bottom of
 --       this file for the regression harness).
+--   F5  Toggle debug timing: log wall-clock for the F2 search and
+--       the per-play prediction/enumeration to the game console.
 --
 -- Scoring follows Balatro's evaluation order:
 --   Phase 1: Each scoring card fires L→R (with retriggers):
@@ -1701,9 +1703,13 @@ local function analyze_hand()
 
     -- Evaluate every possible combo of every size
     local best = {}
+    -- Counters for F5 debug timing (free when flag is off; print only
+    -- reads them at the end of F2).
+    local combo_n, perm_branches, perm_n = 0, 0, 0
     for size = 5, 1, -1 do
         if #cards >= size then
             for _, combo in ipairs(combinations(cards, size)) do
+                combo_n = combo_n + 1
                 local name, score, scoring, used_ev = score_combo(combo, cards)
                 -- Skip zero-score combos (boss-blind debuffs like The Eye /
                 -- The Mouth zero the whole hand; The Psychic zeros any combo
@@ -1716,6 +1722,7 @@ local function analyze_hand()
                     -- scoring card order needs to be explored.
                     local optimal_order = nil
                     if needs_ordering(resolved, scoring) then
+                        perm_branches = perm_branches + 1
                         local scoring_set = {}
                         for _, c in ipairs(scoring) do
                             scoring_set[c] = true
@@ -1727,6 +1734,7 @@ local function analyze_hand()
                             end
                         end
                         for _, perm in ipairs(permutations(scoring)) do
+                            perm_n = perm_n + 1
                             -- Scoring cards first (in permuted order),
                             -- then kickers — get_scoring_cards preserves
                             -- left-to-right order from the combo we pass.
@@ -1785,7 +1793,7 @@ local function analyze_hand()
             end
         end
     end
-    return top
+    return top, { combos = combo_n, perm_branches = perm_branches, perms = perm_n }
 end
 
 -------------------------------------------------------------------------
@@ -1794,7 +1802,16 @@ end
 SMODS.Keybind({
     key_pressed = "f2",
     action = function(self)
-        local results = analyze_hand()
+        local t0 = debug_timing and now_ms()
+        local results, stats = analyze_hand()
+        if debug_timing and t0 then
+            print(string.format(
+                "[BestHand][TIMING] F2 analyze_hand: %.2f ms  (%d combos, %d perm branches, %d perms)",
+                now_ms() - t0,
+                stats and stats.combos or 0,
+                stats and stats.perm_branches or 0,
+                stats and stats.perms or 0))
+        end
         if not results or #results == 0 then return end
         local lines = {"", "-- Best Hands --"}
         -- Note when Splash makes all played cards score
@@ -1914,6 +1931,15 @@ SMODS.Keybind({
 
 local capture_enabled = true
 local capture_dir = "Mods/balatro-best-hand/best_hand_captures"
+
+-- Debug timing. When true, F2 and the per-play prediction hook log
+-- wall-clock breakdowns to the game console so you can tell whether
+-- lag is coming from F2's combinatorial search or from the per-play
+-- probabilistic enumeration. Toggle with F5.
+local debug_timing = false
+local function now_ms()
+    return (love and love.timer and love.timer.getTime() or os.clock()) * 1000
+end
 
 -- Serialize a plain Lua value as a Lua literal. Not general-purpose:
 -- assumes scalars + nested tables of scalars, no cycles, no functions.
@@ -2173,7 +2199,9 @@ if G.FUNCS and G.FUNCS.evaluate_play then
     local original_evaluate_play = G.FUNCS.evaluate_play
     G.FUNCS.evaluate_play = function(e)
         local fixture
+        local t_start, t_single_done, prob_configs
         if capture_enabled then
+            t_start = debug_timing and now_ms()
             local ok, err = pcall(function()
                 local played, held = {}, {}
                 for i, c in ipairs(G.play.cards) do played[i] = c end
@@ -2198,6 +2226,7 @@ if G.FUNCS and G.FUNCS.evaluate_play then
                 local _, score, _, _, n_prob, range_events =
                     compute_predicted_score(played, held)
                 fixture.predicted_score = score
+                if debug_timing then t_single_done = now_ms() end
                 n_prob = n_prob or 0
                 range_events = range_events or {}
 
@@ -2210,6 +2239,7 @@ if G.FUNCS and G.FUNCS.evaluate_play then
                     range_total = range_total * (iv[2] - iv[1] + 1)
                 end
                 local total_configs = (2 ^ n_prob) * range_total
+                prob_configs = total_configs
 
                 if (n_prob + #range_events) > 0 and n_prob <= 10
                     and total_configs <= 10000 then
@@ -2240,6 +2270,14 @@ if G.FUNCS and G.FUNCS.evaluate_play then
             end)
             if not ok then
                 print("[BestHand] capture pre-error: " .. tostring(err))
+            end
+            if debug_timing and t_start then
+                local t_end = now_ms()
+                local t_single = (t_single_done or t_end) - t_start
+                local t_prob = t_end - (t_single_done or t_end)
+                print(string.format(
+                    "[BestHand][TIMING] evaluate_play predict: %.2f ms single + %.2f ms prob (%d configs)",
+                    t_single, t_prob, prob_configs or 0))
             end
         end
 
@@ -2323,5 +2361,13 @@ SMODS.Keybind({
         else
             print("[BestHand] capture disabled")
         end
+    end
+})
+
+SMODS.Keybind({
+    key_pressed = "f5",
+    action = function(self)
+        debug_timing = not debug_timing
+        print("[BestHand] debug timing " .. (debug_timing and "ON" or "off"))
     end
 })
