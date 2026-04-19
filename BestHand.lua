@@ -1491,8 +1491,16 @@ local function score_combo(cards, all_cards, prob_config, range_config)
             -- In Balatro, this fires at the uncommon joker's position
             -- (not at Baseball Card's own slot), even if the joker
             -- has no scoring effect. Rarity 2 = Uncommon.
+            --
+            -- Read rarity from both shapes: live Card objects store it
+            -- at joker.config.center.rarity; fixture tables from
+            -- extract_joker store the scalar at joker.rarity. Checking
+            -- only the latter silently skipped the effect in-game.
             ---------------------------------------------------------
-            if has_baseball_card and joker.rarity == 2 then
+            local rarity = joker.rarity
+                or (joker.config and joker.config.center
+                    and joker.config.center.rarity)
+            if has_baseball_card and rarity == 2 then
                 mult = mult * 1.5
             end
 
