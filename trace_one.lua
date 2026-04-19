@@ -137,9 +137,28 @@ local chunk = assert(loadstring(src, "BestHand"))
 chunk()
 
 -------------------------------------------------------------------------
--- Load fixture and install into G
+-- Load fixture and install into G.
+--
+-- Sandboxed: captures are Lua source (`return { ... }`) and a bare
+-- dofile() would execute anything the file contains with full
+-- privileges (io, os.execute, require). That's fine for captures you
+-- produced locally but risky for ones from bug reports or other
+-- users. Parse the file in an empty env exposing only `math.huge`
+-- (the one global the serializer is allowed to emit, for ±infinity).
+-- Table/string/number/bool/nil literals don't touch the env, so a
+-- well-formed capture loads unchanged; any attempt to reach for io,
+-- os, require, etc. fails on a nil index.
 -------------------------------------------------------------------------
-local fx = assert(dofile(capture_path))
+local function load_fixture(path)
+    local f = assert(io.open(path, "r"), "cannot open " .. path)
+    local src = f:read("*a")
+    f:close()
+    local chunk = assert(loadstring(src, path))
+    setfenv(chunk, { math = { huge = math.huge } })
+    return chunk()
+end
+
+local fx = assert(load_fixture(capture_path))
 
 local function ensure_card(t)
     t.ability = t.ability or {}

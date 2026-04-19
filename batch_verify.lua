@@ -9,8 +9,8 @@
 -- the enumerated set.
 --
 -- Usage: lua batch_verify.lua [captures_dir]
--- Default captures_dir: ../../best_hand_captures (Balatro save dir
--- relative to the mod directory).
+-- Default captures_dir: ./best_hand_captures (co-located with this
+-- script inside the mod directory).
 
 -------------------------------------------------------------------------
 -- Stub the Balatro globals BestHand.lua touches at load time.
@@ -152,6 +152,33 @@ function G.FUNCS.get_poker_hand_info(cards) return detect_hand(cards) end
 function G.FUNCS.evaluate_play(e) end
 
 -------------------------------------------------------------------------
+-- Sandboxed fixture loader.
+--
+-- Capture files are Lua source (`return { ... }`) loaded at replay
+-- time. Using bare `dofile()` would execute anything the file
+-- contains with full Lua privileges (io, os.execute, etc.), which is
+-- fine for captures you produced locally but risky for third-party
+-- captures (bug reports, shared fixtures). This helper parses the
+-- file in an empty environment exposing only `math.huge` — the single
+-- global the serializer is allowed to emit (for rare ±infinity
+-- numbers). Table/string/number/bool/nil literals don't touch the
+-- env, so a well-formed capture loads unchanged while anything that
+-- reaches for `io`, `os`, `require`, etc. fails with a nil index.
+-------------------------------------------------------------------------
+local function load_fixture(path)
+    local f, oerr = io.open(path, "r")
+    if not f then return nil, oerr end
+    local src = f:read("*a")
+    f:close()
+    local chunk, lerr = loadstring(src, path)
+    if not chunk then return nil, lerr end
+    setfenv(chunk, { math = { huge = math.huge } })
+    local ok, result = pcall(chunk)
+    if not ok then return nil, result end
+    return result
+end
+
+-------------------------------------------------------------------------
 -- Load BestHand.lua with export block
 -------------------------------------------------------------------------
 local f = assert(io.open("BestHand.lua", "r"))
@@ -290,7 +317,7 @@ end
 -------------------------------------------------------------------------
 -- Walk captures dir
 -------------------------------------------------------------------------
-local captures_dir = arg[1] or "../../best_hand_captures"
+local captures_dir = arg[1] or "best_hand_captures"
 
 local function list_files(dir)
     local out = {}
@@ -330,9 +357,10 @@ local strict, via_variance, miss = 0, 0, 0
 local misses = {}
 
 for _, path in ipairs(files) do
-    local ok, fx = pcall(dofile, path)
-    if not ok or type(fx) ~= "table" then
-        print(string.format("!! %s: failed to load (%s)", basename(path), tostring(fx)))
+    local fx, lerr = load_fixture(path)
+    local ok = fx ~= nil and type(fx) == "table"
+    if not ok then
+        print(string.format("!! %s: failed to load (%s)", basename(path), tostring(lerr or fx)))
         miss = miss + 1
     else
         local ok2, ev_score, possible, n_prob, n_range, total_configs =

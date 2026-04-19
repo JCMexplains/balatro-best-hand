@@ -1899,7 +1899,7 @@ SMODS.Keybind({
 -- ground truth, not hand-traced expected values.
 --
 -- Toggle with F4 (on by default). Captures go to
---   <save>/best_hand_captures/capture_<timestamp>_<n>.lua
+--   <save>/Mods/balatro-best-hand/best_hand_captures/capture_<timestamp>_<n>.lua
 -- Each file is a Lua literal loadable with dofile():
 --   return { played=..., held=..., jokers=..., game=...,
 --            hand_name=..., predicted_score=..., actual_score=... }
@@ -1913,7 +1913,7 @@ SMODS.Keybind({
 -------------------------------------------------------------------------
 
 local capture_enabled = true
-local capture_dir = "best_hand_captures"
+local capture_dir = "Mods/balatro-best-hand/best_hand_captures"
 
 -- Serialize a plain Lua value as a Lua literal. Not general-purpose:
 -- assumes scalars + nested tables of scalars, no cycles, no functions.
@@ -1926,7 +1926,16 @@ local function serialize(v, indent)
         if v ~= v then return "(0/0)" end
         if v == math.huge then return "math.huge" end
         if v == -math.huge then return "-math.huge" end
-        return tostring(v)
+        -- Emit fractional values at full double precision (%.17g) so
+        -- round-trip through the capture file preserves the exact bit
+        -- pattern. Jokers like Constellation accumulate x_mult via
+        -- repeated += 0.1, which drifts below the clean decimal value;
+        -- the default tostring (%.14g) rounds that drift away and the
+        -- offline replay then over-predicts by 1 at the final floor.
+        if v == math.floor(v) and math.abs(v) < 1e15 then
+            return tostring(v)
+        end
+        return string.format("%.17g", v)
     end
     if t == "string" then return string.format("%q", v) end
     if t ~= "table" then return "nil" end
