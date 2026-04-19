@@ -1798,7 +1798,14 @@ local function analyze_hand()
                     -- play order.  Non-scoring kicker cards go to the
                     -- held-in-hand phase regardless of slot, so only
                     -- scoring card order needs to be explored.
+                    --
+                    -- Keep the default-order score (before permuting) so
+                    -- F2 can report it alongside the optimal when a drag
+                    -- hint is shown — otherwise the F2 number looks like
+                    -- a bug when the user doesn't reorder and the live
+                    -- prediction comes in much lower.
                     local optimal_order = nil
+                    local default_score = score
                     if needs_ordering(ord_flags, scoring) then
                         perm_branches = perm_branches + 1
                         local scoring_set = {}
@@ -1837,6 +1844,7 @@ local function analyze_hand()
                         play          = combo,
                         used_ev       = used_ev,
                         optimal_order = optimal_order,
+                        default_score = default_score,
                     }
                 end
             end
@@ -1965,9 +1973,17 @@ SMODS.Keybind({
             -- Mark scores that include expected-value approximations
             -- (Lucky Card enhancements, Bloodstone joker)
             if r.used_ev then line = line .. " (expected value)" end
-            -- Note when a non-default scoring order boosts the score
+            -- Note when a non-default scoring order boosts the score.
+            -- Also show what the default-order score would be so the
+            -- user can compare. Without this, if the user plays the
+            -- hand WITHOUT reordering, the live prediction comes in
+            -- well below the F2 number and looks like a prediction bug.
             if r.optimal_order then
                 line = line .. "  ← drag scoring cards into this order"
+                if r.default_score and r.default_score < r.score then
+                    line = line .. " (default order: ~"
+                        .. format_number(r.default_score) .. ")"
+                end
             end
             -- Show tied alternatives if any
             if r.alts and #r.alts > 0 then
