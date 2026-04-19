@@ -1036,14 +1036,26 @@ local function eval_flat_jokers(resolved, chips, mult, ctx, state)
             -- +2× the chip value of the lowest held-in-hand card.
             -- Balatro uses nominal (chip value), not rank id — face cards
             -- all have nominal 10, Ace has nominal 11.
-            local lowest = math.huge
+            --
+            -- Debuff interaction (e.g. under The Window): Balatro scans
+            -- ALL held cards to pick the lowest, then the joker's effect
+            -- only fires if that chosen card isn't debuffed. It does NOT
+            -- skip debuffed cards and fall through to the next-lowest.
+            -- So when the lowest-rank held card happens to be debuffed,
+            -- Raised Fist contributes zero mult.
+            local lowest, lowest_debuffed = math.huge, false
             for _, c in ipairs(ctx.all_cards) do
-                if not ctx.played[c] and not c.debuff then
+                if not ctx.played[c] then
                     local nom = c.base.nominal or c.base.id
-                    if nom < lowest then lowest = nom end
+                    if nom < lowest then
+                        lowest = nom
+                        lowest_debuffed = c.debuff or false
+                    end
                 end
             end
-            if lowest < math.huge then mult = mult + 2 * lowest end
+            if lowest < math.huge and not lowest_debuffed then
+                mult = mult + 2 * lowest
+            end
 
         elseif name == "Blue Joker" then
             -- +2 chips per card remaining in the draw pile
