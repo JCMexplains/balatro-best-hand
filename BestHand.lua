@@ -1678,55 +1678,83 @@ end
 -- from firing LATE (after +mult has accumulated), while Hanging Chad's
 -- retrigger benefit scales with the value of the card it targets.
 -------------------------------------------------------------------------
-local function needs_ordering(resolved, scoring)
+-- Precompute which order-sensitive conditions could possibly fire this
+-- F2, given the current jokers and the FULL hand. Done once per F2,
+-- then needs_ordering() only has to check the specific per-combo
+-- conditions that remain in play. Without this, every combo (218 per
+-- F2 worst case) re-scans the entire resolved joker list inside
+-- needs_ordering — pure constant overhead.
+local function build_ordering_flags(resolved, hand_cards)
+    local flags = {
+        pareidolia    = false,
+        hanging_chad  = false,
+        photograph    = false,
+        ancient_joker = false,
+        bloodstone    = false,
+        triboulet     = false,
+        idol          = false,
+        -- A hand-level "maybe" for card-edition/enhancement effects:
+        -- if no card in the whole hand has polychrome or Glass, no
+        -- scoring subset ever will either.
+        maybe_poly_or_glass = false,
+    }
+    for _, j in ipairs(resolved) do
+        local n = j.name
+        if     n == "Pareidolia"    then flags.pareidolia    = true
+        elseif n == "Hanging Chad"  then flags.hanging_chad  = true
+        elseif n == "Photograph"    then flags.photograph    = true
+        elseif n == "Ancient Joker" then flags.ancient_joker = true
+        elseif n == "Bloodstone"    then flags.bloodstone    = true
+        elseif n == "Triboulet"     then flags.triboulet     = true
+        elseif n == "The Idol"      then flags.idol          = true
+        end
+    end
+    if flags.idol then
+        local ic = G.GAME and G.GAME.current_round
+            and G.GAME.current_round.idol_card
+        if ic then
+            flags.idol_id   = ic.id
+            flags.idol_suit = ic.suit
+        else
+            flags.idol = false
+        end
+    end
+    for _, c in ipairs(hand_cards) do
+        if (c.edition and c.edition.polychrome)
+            or (c.ability and c.ability.name == "Glass Card") then
+            flags.maybe_poly_or_glass = true
+            break
+        end
+    end
+    -- Cheap top-level gate: when none of these hold, no combo will
+    -- ever need ordering and needs_ordering() can short-circuit without
+    -- even walking the scoring set.
+    flags.maybe = flags.hanging_chad or flags.ancient_joker
+        or flags.photograph or flags.bloodstone or flags.triboulet
+        or flags.idol or flags.maybe_poly_or_glass
+    return flags
+end
+
+local function needs_ordering(flags, scoring)
+    if not flags.maybe then return false end
     if not scoring or #scoring <= 1 then return false end
 
-    local pareidolia = false
-    for _, j in ipairs(resolved) do
-        if j.name == "Pareidolia" then pareidolia = true; break end
-    end
-
-    for _, j in ipairs(resolved) do
-        local name = j.name
-
-        if name == "Hanging Chad" then return true end
-
-        if name == "Photograph" then
-            for _, c in ipairs(scoring) do
-                if pareidolia or (c.base.id >= 11 and c.base.id <= 13) then
-                    return true
-                end
-            end
-        end
-
-        if name == "Ancient Joker" then return true end
-
-        if name == "Bloodstone" then
-            for _, c in ipairs(scoring) do
-                if c.base.suit == "Hearts" then return true end
-            end
-        end
-
-        if name == "Triboulet" then
-            for _, c in ipairs(scoring) do
-                if c.base.id == 12 or c.base.id == 13 then return true end
-            end
-        end
-
-        if name == "The Idol" then
-            local ic = G.GAME.current_round
-                and G.GAME.current_round.idol_card
-            if ic then
-                for _, c in ipairs(scoring) do
-                    if c.base.id == ic.id and c.base.suit == ic.suit then
-                        return true
-                    end
-                end
-            end
-        end
-    end
+    -- Unconditional jokers: their presence alone justifies exploring
+    -- permutations. Hanging Chad always retriggers SOME card; Ancient
+    -- Joker's x_mult applies to whichever card ends up at a particular
+    -- suit position.
+    if flags.hanging_chad or flags.ancient_joker then return true end
 
     for _, c in ipairs(scoring) do
+        local id = c.base.id
+        if flags.photograph and
+            (flags.pareidolia or (id >= 11 and id <= 13)) then
+            return true
+        end
+        if flags.bloodstone and c.base.suit == "Hearts" then return true end
+        if flags.triboulet and (id == 12 or id == 13) then return true end
+        if flags.idol and id == flags.idol_id
+            and c.base.suit == flags.idol_suit then return true end
         if c.edition and c.edition.polychrome then return true end
         if c.ability and c.ability.name == "Glass Card" then return true end
     end
@@ -1746,6 +1774,10 @@ local function analyze_hand()
     -- Resolve Blueprint/Brainstorm once for needs_ordering checks.
     -- score_combo() re-resolves internally; this is just for detection.
     local resolved = resolve_jokers()
+    -- Precompute ordering flags once so the per-combo needs_ordering
+    -- call can short-circuit without re-scanning the resolved joker
+    -- list each time. (~218 calls/F2 → big constant-factor win.)
+    local ord_flags = build_ordering_flags(resolved, cards)
 
     -- Evaluate every possible combo of every size
     local best = {}
@@ -1767,7 +1799,7 @@ local function analyze_hand()
                     -- held-in-hand phase regardless of slot, so only
                     -- scoring card order needs to be explored.
                     local optimal_order = nil
-                    if needs_ordering(resolved, scoring) then
+                    if needs_ordering(ord_flags, scoring) then
                         perm_branches = perm_branches + 1
                         local scoring_set = {}
                         for _, c in ipairs(scoring) do
@@ -1840,6 +1872,48 @@ local function analyze_hand()
         end
     end
     return top, { combos = combo_n, perm_branches = perm_branches, perms = perm_n }
+end
+
+-------------------------------------------------------------------------
+-- JIT warmup.
+--
+-- The first F2 press of a session takes ~5x longer than subsequent
+-- presses because LuaJIT hasn't yet compiled the combinatorial search
+-- paths (combinations(), the per-size loop, the sort+dedup at the
+-- end). Evaluate_play doesn't exercise those paths — it only scores
+-- one combo — so playing a hand doesn't warm them up on its own.
+--
+-- schedule_warmup() queues a non-blocking deferred event that runs
+-- analyze_hand() once, silently, so LuaJIT compiles the hot path
+-- BEFORE the user actually presses F2. It's called from the
+-- evaluate_play hook (on every play, but idempotent via warmed_up):
+-- by the time the user presses F2 after their first play of the
+-- session, the JIT is warm.
+--
+-- Guarded on G.E_MANAGER and Event existing — both are Balatro
+-- globals that aren't defined at mod load time, so this function
+-- no-ops until gameplay state is up. Also gated on G.hand.cards
+-- being populated so the warmup runs against realistic data rather
+-- than an empty hand.
+-------------------------------------------------------------------------
+local warmed_up = false
+local function schedule_warmup()
+    if warmed_up then return end
+    if not (G and G.E_MANAGER and Event) then return end
+    if not (G.hand and G.hand.cards and #G.hand.cards > 0) then return end
+    G.E_MANAGER:add_event(Event({
+        trigger   = "after",
+        delay     = 0.1,
+        blockable = false,
+        blocking  = false,
+        func = function()
+            if not warmed_up then
+                pcall(analyze_hand)
+                warmed_up = true
+            end
+            return true
+        end,
+    }))
 end
 
 -------------------------------------------------------------------------
@@ -2386,6 +2460,10 @@ if G.FUNCS and G.FUNCS.evaluate_play then
                 print("[BestHand] capture post-error: " .. tostring(err))
             end
         end
+
+        -- Kick off the (one-time) JIT warmup. Idempotent; does nothing
+        -- after the first successful run.
+        schedule_warmup()
     end
 end
 
