@@ -1518,7 +1518,13 @@ local function score_combo(cards, all_cards, prob_config, range_config)
             -- stored ability fields — no game functions called.
             ---------------------------------------------------------
             local ability = joker.ability or {}
-            local extra   = ability.extra or {}
+            -- Some Balatro jokers store ability.extra as a scalar
+            -- (e.g. a number meaning "that much mult") rather than a
+            -- table of named fields. `or {}` wouldn't catch those
+            -- because a number is truthy; we'd then index a number
+            -- and crash. Force a table when it isn't one.
+            local extra   = ability.extra
+            if type(extra) ~= "table" then extra = {} end
             if name == "Wee Joker" then
                 -- Grows +chip_mod per scored 2 (context.individual on id==2),
                 -- once per trigger so retriggers (Seltzer, Hack, Red Seal,
@@ -1551,6 +1557,25 @@ local function score_combo(cards, all_cards, prob_config, range_config)
                 -- contains a Two Pair.
                 if contains_two_pair[hand_name] then
                     mult = mult + (extra.mult or 2)
+                end
+            elseif name == "Ride the Bus" then
+                -- context.before runs BEFORE joker_main reads
+                -- ability.mult. If no scoring card is a face,
+                -- ability.mult += extra.mult_mod (default 1); if any
+                -- face scored, ability.mult resets to 0. Both paths
+                -- above (hybrid and fallback) already added the
+                -- pre-increment value, so apply the delta here.
+                local has_face = false
+                for _, c in ipairs(scoring) do
+                    local id = c.base.id
+                    if pareidolia or (id >= 11 and id <= 13) then
+                        has_face = true; break
+                    end
+                end
+                if has_face then
+                    mult = mult - (ability.mult or 0)
+                else
+                    mult = mult + (extra.mult_mod or 1)
                 end
             end
         end
