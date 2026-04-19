@@ -53,6 +53,19 @@ do
 end
 
 -------------------------------------------------------------------------
+-- Debug timing. When true, F2 and the per-play prediction hook log
+-- wall-clock breakdowns to the game console so you can tell whether
+-- lag is coming from F2's combinatorial search or from the per-play
+-- probabilistic enumeration. Toggled at runtime by the F5 keybind
+-- (registered near the bottom of this file). Declared up here so
+-- every handler below — including F2 — captures it as an upvalue.
+-------------------------------------------------------------------------
+local debug_timing = false
+local function now_ms()
+    return (love and love.timer and love.timer.getTime() or os.clock()) * 1000
+end
+
+-------------------------------------------------------------------------
 -- Utility: generate all k-element subsets of a list
 -------------------------------------------------------------------------
 local function combinations(list, k)
@@ -1931,15 +1944,6 @@ SMODS.Keybind({
 
 local capture_enabled = true
 local capture_dir = "Mods/balatro-best-hand/best_hand_captures"
-
--- Debug timing. When true, F2 and the per-play prediction hook log
--- wall-clock breakdowns to the game console so you can tell whether
--- lag is coming from F2's combinatorial search or from the per-play
--- probabilistic enumeration. Toggle with F5.
-local debug_timing = false
-local function now_ms()
-    return (love and love.timer and love.timer.getTime() or os.clock()) * 1000
-end
 
 -- Serialize a plain Lua value as a Lua literal. Not general-purpose:
 -- assumes scalars + nested tables of scalars, no cycles, no functions.
