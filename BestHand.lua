@@ -742,6 +742,46 @@ local function resolve_jokers()
 end
 
 -------------------------------------------------------------------------
+-- Per-F2 invariants derived from the resolved joker list. All five fields
+-- were previously re-scanned inside score_combo on every combo (~218
+-- times/F2) even though the joker list can't change between combos of a
+-- single analyze_hand() call. One single-pass scan replaces five.
+--
+-- resolve_jokers() itself is also allocating; analyze_hand now builds
+-- `resolved` once and reuses it here. Callers without a precomputed
+-- bundle (compute_predicted_score → single-shot) fall back to a lazy
+-- build inside score_combo so behavior is unchanged for them.
+-------------------------------------------------------------------------
+local function build_combo_precomputed(resolved)
+    local pareidolia = false
+    local hiker_count = 0
+    local has_baron, baron_count = false, 0
+    local has_shoot_moon, shoot_moon_count = false, 0
+    local has_baseball_card = false
+    for _, j in ipairs(resolved) do
+        local n = j.name
+        if     n == "Pareidolia"     then pareidolia        = true
+        elseif n == "Hiker"          then hiker_count       = hiker_count + 1
+        elseif n == "Baron"          then has_baron         = true
+                                          baron_count       = baron_count + 1
+        elseif n == "Shoot the Moon" then has_shoot_moon    = true
+                                          shoot_moon_count  = shoot_moon_count + 1
+        elseif n == "Baseball Card"  then has_baseball_card = true
+        end
+    end
+    return {
+        resolved          = resolved,
+        pareidolia        = pareidolia,
+        hiker_add         = hiker_count * 5,
+        has_baron         = has_baron,
+        baron_count       = baron_count,
+        has_shoot_moon    = has_shoot_moon,
+        shoot_moon_count  = shoot_moon_count,
+        has_baseball_card = has_baseball_card,
+    }
+end
+
+-------------------------------------------------------------------------
 -- Apply a foil/holo/polychrome edition bonus to (chips, mult).
 -- Used in three places: played-card editions in Phase 1, held Steel
 -- card editions in Phase 2, and joker editions in Phase 3.
@@ -1126,7 +1166,7 @@ end
 -- range_events is an array of {lo, hi} bounds, one per range fire, so a
 -- caller can iterate the cartesian product to enumerate all outcomes.
 -------------------------------------------------------------------------
-local function score_combo(cards, all_cards, prob_config, range_config)
+local function score_combo(cards, all_cards, prob_config, range_config, precomputed)
     -- Identify the poker hand type and look up base chips/mult from level.
     -- Also capture poker_hands (the sub-hand containment table the game builds)
     -- because the hybrid joker path passes it to real calculate_joker calls
@@ -1197,16 +1237,20 @@ local function score_combo(cards, all_cards, prob_config, range_config)
     -- Determine which cards score (excludes kickers, includes Stone Cards)
     local scoring = get_scoring_cards(cards, hand_name)
 
-    -- Resolve Blueprint/Brainstorm into effective joker list once
-    local resolved = resolve_jokers()
-
-    -- Detect Pareidolia once up front. When present, every card counts
-    -- as a face card for Scary Face, Smiley Face, Photograph, and the
-    -- Sock and Buskin retrigger check.
-    local pareidolia = false
-    for _, j in ipairs(resolved) do
-        if j.name == "Pareidolia" then pareidolia = true; break end
-    end
+    -- Unpack per-F2 invariants. analyze_hand's combo loop builds these
+    -- once and passes them in; single-shot callers get a lazy build.
+    -- Everything here (resolved list, Pareidolia, Hiker, Baron, Shoot
+    -- the Moon, Baseball Card) depends only on the joker list, not on
+    -- which scoring subset we're evaluating.
+    precomputed = precomputed or build_combo_precomputed(resolve_jokers())
+    local resolved          = precomputed.resolved
+    local pareidolia        = precomputed.pareidolia
+    local hiker_add         = precomputed.hiker_add
+    local has_baron         = precomputed.has_baron
+    local baron_count       = precomputed.baron_count
+    local has_shoot_moon    = precomputed.has_shoot_moon
+    local shoot_moon_count  = precomputed.shoot_moon_count
+    local has_baseball_card = precomputed.has_baseball_card
 
     -- Cross-card state for per-card joker effects.
     -- used_ev gets flipped true whenever a probabilistic effect (Lucky Card,
@@ -1229,15 +1273,8 @@ local function score_combo(cards, all_cards, prob_config, range_config)
     -- Retriggers repeat the entire sequence for that card.
     -------------------------------------------------
 
-    -- Count Hiker instances — Hiker permanently adds +5 to each
-    -- card's perma_bonus per trigger (no immediate chip bonus).
-    -- We simulate the accumulation per card across triggers.
-    local hiker_count = 0
-    for _, j in ipairs(resolved) do
-        if j.name == "Hiker" then hiker_count = hiker_count + 1 end
-    end
-    local hiker_add = hiker_count * 5
-
+    -- Hiker: permanent +5 perma_bonus per trigger per Hiker. hiker_add
+    -- is precomputed once per F2 (= 5 × count); we just read it here.
     for idx, card in ipairs(scoring) do
         if not card.debuff then
             local triggers = get_triggers(card, idx, false, pareidolia, resolved)
@@ -1310,22 +1347,8 @@ local function score_combo(cards, all_cards, prob_config, range_config)
     -- in the opposite order mis-scales jokers like Mad Joker holo
     -- that add flat mult on top of Baron's x1.5 multiplier.
     -------------------------------------------------
-    -- Pre-check which held-in-hand joker effects are active
-    local has_baron = false
-    local baron_count = 0       -- how many Baron instances (Blueprint can copy)
-    local has_shoot_moon = false
-    local shoot_moon_count = 0
-    for _, j in ipairs(resolved) do
-        if j.name == "Baron" then
-            has_baron = true
-            baron_count = baron_count + 1
-        end
-        if j.name == "Shoot the Moon" then
-            has_shoot_moon = true
-            shoot_moon_count = shoot_moon_count + 1
-        end
-    end
-
+    -- has_baron / baron_count / has_shoot_moon / shoot_moon_count are
+    -- all read from `precomputed` — same reason Hiker is hoisted.
     for _, card in ipairs(all_cards) do
         if not played[card] and not card.debuff then
             local is_steel = card.ability and card.ability.name == "Steel Card"
@@ -1402,16 +1425,9 @@ local function score_combo(cards, all_cards, prob_config, range_config)
     -- `resolved` (built in Phase 1 above) provides the fallback path's
     -- pre-resolved ability/name/edition for Blueprint/Brainstorm jokers.
 
-    -- Baseball Card: each uncommon joker (rarity == 2) gives x1.5 mult.
-    -- The x1.5 fires at the uncommon joker's slot position, even if the
-    -- joker itself has no scoring effect. Detect presence once up front.
-    local has_baseball_card = false
-    for _, j in ipairs(resolved) do
-        if j.name == "Baseball Card" then
-            has_baseball_card = true
-            break
-        end
-    end
+    -- Baseball Card: each uncommon joker (rarity == 2) gives x1.5 mult
+    -- at the uncommon joker's slot position. Presence is read from the
+    -- precomputed bundle (see build_combo_precomputed).
 
     -- Iterate the real joker Card objects (not the resolved list) so
     -- calculate_joker is called on the actual Card — Blueprint's own
@@ -1783,13 +1799,14 @@ local function analyze_hand()
     local cards = G.hand.cards
     if #cards == 0 then return nil end
 
-    -- Resolve Blueprint/Brainstorm once for needs_ordering checks.
-    -- score_combo() re-resolves internally; this is just for detection.
-    local resolved = resolve_jokers()
-    -- Precompute ordering flags once so the per-combo needs_ordering
-    -- call can short-circuit without re-scanning the resolved joker
-    -- list each time. (~218 calls/F2 → big constant-factor win.)
-    local ord_flags = build_ordering_flags(resolved, cards)
+    -- Resolve Blueprint/Brainstorm once and precompute the per-F2
+    -- invariants (Pareidolia, Hiker, Baron, Shoot the Moon, Baseball
+    -- Card) in one pass. Both `ord_flags` and `precomputed` are then
+    -- reused across every score_combo call (~218 combos × up to 120
+    -- perms), replacing work that used to repeat per combo.
+    local resolved    = resolve_jokers()
+    local ord_flags   = build_ordering_flags(resolved, cards)
+    local precomputed = build_combo_precomputed(resolved)
 
     -- Evaluate every possible combo of every size
     local best = {}
@@ -1800,7 +1817,8 @@ local function analyze_hand()
         if #cards >= size then
             for _, combo in ipairs(combinations(cards, size)) do
                 combo_n = combo_n + 1
-                local name, score, scoring, used_ev = score_combo(combo, cards)
+                local name, score, scoring, used_ev =
+                    score_combo(combo, cards, nil, nil, precomputed)
                 -- Skip zero-score combos (boss-blind debuffs like The Eye /
                 -- The Mouth zero the whole hand; The Psychic zeros any combo
                 -- with fewer than 5 cards). These are never worth showing.
@@ -1840,7 +1858,7 @@ local function analyze_hand()
                                 reordered[#reordered + 1] = c
                             end
                             local _, ps, psc, pev =
-                                score_combo(reordered, cards)
+                                score_combo(reordered, cards, nil, nil, precomputed)
                             if ps > score then
                                 score         = ps
                                 scoring       = psc
