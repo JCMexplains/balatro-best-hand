@@ -1971,7 +1971,7 @@ SMODS.Keybind({
                 stats and stats.perms or 0))
         end
         if not results or #results == 0 then return end
-        local lines = {"", "-- Best Hands --"}
+        local lines = {"", "", "", "-- Best Hands --"}
         -- Note when Splash makes all played cards score
         if G.jokers and G.jokers.cards then
             for _, joker in ipairs(G.jokers.cards) do
