@@ -66,11 +66,15 @@ local function now_ms()
 end
 
 -------------------------------------------------------------------------
--- Colorize console output in light blue (ANSI 94) so BestHand lines
--- stand out from Balatro's own logs in the Lovely console.
+-- Colorize console output so BestHand lines stand out from Balatro's
+-- own logs in the Lovely console. Change LOG_COLOR to restyle every
+-- BestHand print site at once (e.g. '\27[96m' for cyan, '\27[92m' for
+-- green — see ANSI SGR codes).
 -------------------------------------------------------------------------
+local LOG_COLOR = '\27[94m' -- light blue
+local LOG_RESET = '\27[0m'
 local function log(s)
-  log('\27[94m' .. s .. '\27[0m')
+  print(LOG_COLOR .. s .. LOG_RESET)
 end
 
 -------------------------------------------------------------------------
