@@ -66,6 +66,14 @@ local function now_ms()
 end
 
 -------------------------------------------------------------------------
+-- Colorize console output in light blue (ANSI 94) so BestHand lines
+-- stand out from Balatro's own logs in the Lovely console.
+-------------------------------------------------------------------------
+local function log(s)
+  log('\27[94m' .. s .. '\27[0m')
+end
+
+-------------------------------------------------------------------------
 -- Utility: generate all k-element subsets of a list
 -------------------------------------------------------------------------
 local function combinations(list, k)
@@ -1969,7 +1977,7 @@ SMODS.Keybind({
     local t0 = debug_timing and now_ms()
     local results, stats = analyze_hand()
     if debug_timing and t0 then
-      print(string.format(
+      log(string.format(
         '[BestHand][TIMING] F2 analyze_hand: %.2f ms  (%d combos, %d perm branches, %d perms)',
         now_ms() - t0,
         stats and stats.combos or 0,
@@ -2032,7 +2040,7 @@ SMODS.Keybind({
       end
       lines[#lines + 1] = line
     end
-    for _, line in ipairs(lines) do print(line) end
+    for _, line in ipairs(lines) do log(line) end
   end
 })
 
@@ -2058,7 +2066,7 @@ SMODS.Keybind({
     if card then
       dump(card, 'card', 0)
     else
-      print('F3: no hand to dump — press F3 during a round, while cards are in your hand')
+      log('F3: no hand to dump — press F3 during a round, while cards are in your hand')
       return
     end
     if G.jokers and G.jokers.cards then
@@ -2077,7 +2085,7 @@ SMODS.Keybind({
     local f = io.open(path, 'w')
     for _, line in ipairs(out) do f:write(line .. '\n') end
     f:close()
-    print('Written to ' .. path)
+    log('Written to ' .. path)
   end
 })
 
@@ -2347,13 +2355,13 @@ local function write_capture(fixture)
 
   local f = io.open(path, 'w')
   if not f then
-    print('[BestHand] failed to open capture file: ' .. path)
+    log('[BestHand] failed to open capture file: ' .. path)
     return
   end
   f:write('-- BestHand capture fixture — auto-generated, safe to delete\n')
   f:write('return ' .. serialize(fixture) .. '\n')
   f:close()
-  print('[BestHand] captured: ' .. path)
+  log('[BestHand] captured: ' .. path)
 end
 
 -- Wrap G.FUNCS.evaluate_play. Capture PRE-scoring so the fixture matches
@@ -2435,13 +2443,13 @@ if G.FUNCS and G.FUNCS.evaluate_play then
         end
       end)
       if not ok then
-        print('[BestHand] capture pre-error: ' .. tostring(err))
+        log('[BestHand] capture pre-error: ' .. tostring(err))
       end
       if debug_timing and t_start then
         local t_end = now_ms()
         local t_single = (t_single_done or t_end) - t_start
         local t_prob = t_end - (t_single_done or t_end)
-        print(string.format(
+        log(string.format(
           '[BestHand][TIMING] evaluate_play predict: %.2f ms single + %.2f ms prob (%d configs)',
           t_single, t_prob, prob_configs or 0))
       end
@@ -2459,7 +2467,7 @@ if G.FUNCS and G.FUNCS.evaluate_play then
         -- stale prior value rather than 0. Skip the compare here —
         -- our predicted 0 is already correct.
         if fixture.debuffed_by_blind then
-          print(string.format(
+          log(string.format(
             '[BestHand] %s: debuffed by %s — skipping compare (actual_score unreliable)',
             tostring(fixture.hand_name or '?'),
             (G.GAME and G.GAME.blind and G.GAME.blind.name) or 'boss'))
@@ -2503,7 +2511,7 @@ if G.FUNCS and G.FUNCS.evaluate_play then
             local delta = actual - fixture.predicted_score
             tag = '(off by ' .. format_number(delta) .. ')'
           end
-          print(string.format('[BestHand] %s: predicted %s, actual %s  %s',
+          log(string.format('[BestHand] %s: predicted %s, actual %s  %s',
             hn,
             format_number(fixture.predicted_score),
             format_number(actual),
@@ -2515,7 +2523,7 @@ if G.FUNCS and G.FUNCS.evaluate_play then
         end
       end)
       if not ok then
-        print('[BestHand] capture post-error: ' .. tostring(err))
+        log('[BestHand] capture post-error: ' .. tostring(err))
       end
     end
 
@@ -2530,9 +2538,9 @@ SMODS.Keybind({
   action = function(self)
     capture_enabled = not capture_enabled
     if capture_enabled then
-      print('[BestHand] capture ENABLED — each played hand will be recorded')
+      log('[BestHand] capture ENABLED — each played hand will be recorded')
     else
-      print('[BestHand] capture disabled')
+      log('[BestHand] capture disabled')
     end
   end
 })
@@ -2541,6 +2549,6 @@ SMODS.Keybind({
   key_pressed = 'f5',
   action = function(self)
     debug_timing = not debug_timing
-    print('[BestHand] debug timing ' .. (debug_timing and 'ON' or 'off'))
+    log('[BestHand] debug timing ' .. (debug_timing and 'ON' or 'off'))
   end
 })
