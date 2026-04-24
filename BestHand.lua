@@ -667,10 +667,36 @@ end
 -------------------------------------------------------------------------
 -- Resolve Blueprint and Brainstorm into their effective joker targets.
 -- Returns a list of {ability, name, edition} entries in slot order.
--- Blueprint copies the joker to its right (chained Blueprints walk
--- rightward until a real joker is found). Brainstorm copies the
--- leftmost joker.
+-- Blueprint copies the joker to its right; Brainstorm copies the
+-- leftmost joker. Copies chain — Blueprint→Brainstorm→(leftmost)
+-- and Brainstorm→Blueprint→(right) both walk through to the underlying
+-- real joker. `visited` prevents infinite recursion when two copy
+-- jokers reference each other.
 -------------------------------------------------------------------------
+local function resolve_copy_target(jokers, index, visited)
+  if visited[index] then return nil end
+  visited[index] = true
+  local joker = jokers[index]
+  if not joker or joker.debuff or not joker.ability then return nil end
+  local name = joker.ability.name or ''
+  if name == 'Blueprint' then
+    for k = index + 1, #jokers do
+      local t = jokers[k]
+      if t and not t.debuff and t.ability then
+        return resolve_copy_target(jokers, k, visited)
+      end
+    end
+    return nil
+  elseif name == 'Brainstorm' then
+    if #jokers > 0 then
+      return resolve_copy_target(jokers, 1, visited)
+    end
+    return nil
+  else
+    return joker.ability
+  end
+end
+
 local function resolve_jokers()
   if not G.jokers or not G.jokers.cards then return {} end
   local jokers = G.jokers.cards
@@ -681,51 +707,16 @@ local function resolve_jokers()
       local ability = joker.ability or {}
       local name = ability.name or ''
 
-      if name == 'Blueprint' then
-        -- Walk rightward past chained Blueprints to find the real target
-        local target_ability = nil
-        for k = i + 1, #jokers do
-          local t = jokers[k]
-          if not t.debuff and t.ability then
-            local tname = t.ability.name or ''
-            if tname == 'Brainstorm' then
-              -- Brainstorm copies leftmost; resolve that instead
-              local left = jokers[1]
-              if left and left ~= t and not left.debuff
-                and left.ability
-                and left.ability.name ~= 'Blueprint'
-                and left.ability.name ~= 'Brainstorm' then
-                target_ability = left.ability
-              end
-              break
-            elseif tname ~= 'Blueprint' then
-              target_ability = t.ability
-              break
-            end
-            -- Another Blueprint: keep walking right
-          end
-        end
+      if name == 'Blueprint' or name == 'Brainstorm' then
+        -- Copy jokers chain through other copy jokers with cycle
+        -- detection. The copy joker's OWN edition still applies.
+        local target_ability = resolve_copy_target(jokers, i, {})
         if target_ability then
           resolved[#resolved + 1] = {
             ability = target_ability,
             name = target_ability.name or '',
-            edition = joker.edition, -- Blueprint uses its OWN edition
+            edition = joker.edition,
           }
-        end
-
-      elseif name == 'Brainstorm' then
-        -- Copy the leftmost joker (skip self if Brainstorm is first)
-        local target = jokers[1]
-        if target and target ~= joker and not target.debuff
-          and target.ability then
-          local tname = target.ability.name or ''
-          if tname ~= 'Blueprint' and tname ~= 'Brainstorm' then
-            resolved[#resolved + 1] = {
-              ability = target.ability,
-              name = tname,
-              edition = joker.edition,
-            }
-          end
         end
 
       else
@@ -788,19 +779,36 @@ end
 
 -------------------------------------------------------------------------
 -- Apply a foil/holo/polychrome edition bonus to (chips, mult).
--- Used in three places: played-card editions in Phase 1, held Steel
--- card editions in Phase 2, and joker editions in Phase 3.
+-- Used for played-card editions in Phase 1, held Steel card editions
+-- in Phase 2, and as a convenience for jokers with no Xmult effect.
+-- For jokers that include an Xmult effect, use edition_additive before
+-- the Xmult and edition_multiplicative after — Balatro composes the
+-- joker and edition events as if the edition's additive mult joins
+-- the joker's additive before the joker's Xmult, so applying holo
+-- AFTER ×mult (as this monolithic helper would) undershoots by
+-- (holo bonus) × (Xmult − 1).
 -------------------------------------------------------------------------
-local function apply_edition(edition, chips, mult)
+local function edition_additive(edition, chips, mult)
   if edition then
     if edition.foil then
       chips = chips + 50
     elseif edition.holo then
       mult = mult + 10
-    elseif edition.polychrome then
-      mult = mult * 1.5
     end
   end
+  return chips, mult
+end
+
+local function edition_multiplicative(edition, chips, mult)
+  if edition and edition.polychrome then
+    mult = mult * 1.5
+  end
+  return chips, mult
+end
+
+local function apply_edition(edition, chips, mult)
+  chips, mult = edition_additive(edition, chips, mult)
+  chips, mult = edition_multiplicative(edition, chips, mult)
   return chips, mult
 end
 
@@ -960,6 +968,11 @@ local function eval_flat_jokers(resolved, chips, mult, ctx, state)
     local ability = j.ability
     local name = j.name
 
+    -- Edition additive (holo +10, foil +50) fires alongside the joker's
+    -- own +mult/+chips, BEFORE any multiplicative step. Polychrome ×1.5
+    -- is applied after the joker's effect at the bottom of the loop.
+    chips, mult = edition_additive(j.edition, chips, mult)
+
     -------------------------------------------
     -- Data-driven dispatch: accumulator jokers whose value lives on
     -- ability.mult / ability.x_mult / ability.extra.chips
@@ -1060,8 +1073,13 @@ local function eval_flat_jokers(resolved, chips, mult, ctx, state)
       if hands == 0 then mult = mult * 3 end
 
     elseif name == 'Bootstraps' then
-      -- +2 mult per $5 currently held
-      local dollars = G.GAME.dollars or 0
+      -- +2 mult per $5 currently held. Bootstraps fires in the flat
+      -- joker phase AFTER played cards have scored, so any Gold-seal
+      -- dollars ($3 per scoring trigger of a Gold-sealed played card)
+      -- have already been credited to G.GAME.dollars. score_combo
+      -- pre-sums those into ctx.scoring_dollars so we can apply the
+      -- mid-hand income without touching game state.
+      local dollars = (G.GAME.dollars or 0) + (ctx.scoring_dollars or 0)
       mult = mult + 2 * math.floor(dollars / 5)
 
     elseif name == 'Blackboard' then
@@ -1148,8 +1166,8 @@ local function eval_flat_jokers(resolved, chips, mult, ctx, state)
       mult = mult * (1 + per_steel * count)
     end
 
-    -- Joker edition bonuses (applied after each joker's own effect)
-    chips, mult = apply_edition(j.edition, chips, mult)
+    -- Polychrome ×1.5 fires after the joker's own Xmult effect.
+    chips, mult = edition_multiplicative(j.edition, chips, mult)
   end
 
   return chips, mult
@@ -1280,9 +1298,16 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
 
   -- Hiker: permanent +5 perma_bonus per trigger per Hiker. hiker_add
   -- is precomputed once per F2 (= 5 × count); we just read it here.
+  -- scoring_dollars tracks $ earned mid-hand from Gold-seal scoring
+  -- triggers ($3 each), so Phase 3 jokers that read G.GAME.dollars
+  -- (Bootstraps) see the real value the game presents to them.
+  local scoring_dollars = 0
   for idx, card in ipairs(scoring) do
     if not card.debuff then
       local triggers = get_triggers(card, idx, false, pareidolia, resolved)
+      if card.seal == 'Gold' then
+        scoring_dollars = scoring_dollars + 3 * triggers
+      end
       local hiker_accum = 0  -- accumulated perma_bonus from Hiker for this card
       for trig = 1, triggers do
         -- Base chip value from card rank (Stone Cards have nominal=0)
@@ -1351,38 +1376,72 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- fires joker_main in the loop starting at line 680. Running them
   -- in the opposite order mis-scales jokers like Mad Joker holo
   -- that add flat mult on top of Baron's x1.5 multiplier.
+  --
+  -- DNA duplication: if this is the first hand of the round and the
+  -- player played exactly one card, each DNA joker (including
+  -- Blueprint/Brainstorm copies) duplicates the played card into
+  -- G.hand during Phase 1. Those copies then fire held-in-hand
+  -- effects in Phase 2. Simulate by counting DNAs and iterating
+  -- the duplicates alongside the real held cards.
   -------------------------------------------------
-  -- has_baron / baron_count / has_shoot_moon / shoot_moon_count are
-  -- all read from `precomputed` — same reason Hiker is hoisted.
-  for _, card in ipairs(all_cards) do
-    if not played[card] and not card.debuff then
-      local is_steel = card.ability and card.ability.name == 'Steel Card'
-      local is_king = card.base.id == 13
-      local is_queen = card.base.id == 12
-
-      -- Only process cards that have at least one held-in-hand effect
-      if is_steel or (has_baron and is_king)
-        or (has_shoot_moon and is_queen) then
-        local triggers = get_triggers(card, 0, true, pareidolia, resolved)
-        for _ = 1, triggers do
-          -- Steel Card enhancement: x1.5 mult per trigger.
-          -- Card editions do NOT fire for held-in-hand effects;
-          -- they only fire in Phase 1 for scored cards.
-          if is_steel then
-            mult = mult * 1.5
-          end
-          -- Baron: x1.5 mult per held King, per Baron instance
-          if has_baron and is_king then
-            for _ = 1, baron_count do
-              mult = mult * 1.5
-            end
-          end
-          -- Shoot the Moon: +13 mult per held Queen, per instance
-          if has_shoot_moon and is_queen then
-            mult = mult + 13 * shoot_moon_count
-          end
+  local dna_copies = 0
+  if #cards == 1 then
+    -- DNA's Balatro condition is G.GAME.current_round.hands_played == 0
+    -- (first hand of round) plus a 1-card scoring hand. Captures before
+    -- this field was extracted won't carry it; without the counter we
+    -- can't tell whether this was a first-hand replay or a later one
+    -- with identical visible state, so skip the duplication rather
+    -- than guess. Live-game F2 reads the real counter directly.
+    local cr = G.GAME and G.GAME.current_round
+    if cr and cr.hands_played == 0 then
+      for _, j in ipairs(resolved) do
+        if j.name == 'DNA' then
+          dna_copies = dna_copies + 1
         end
       end
+    end
+  end
+
+  -- has_baron / baron_count / has_shoot_moon / shoot_moon_count are
+  -- all read from `precomputed` — same reason Hiker is hoisted.
+  local function apply_held_effects(card)
+    if card.debuff then return end
+    local is_steel = card.ability and card.ability.name == 'Steel Card'
+    local is_king = card.base.id == 13
+    local is_queen = card.base.id == 12
+    if not (is_steel or (has_baron and is_king)
+      or (has_shoot_moon and is_queen)) then return end
+    local triggers = get_triggers(card, 0, true, pareidolia, resolved)
+    for _ = 1, triggers do
+      -- Steel Card enhancement: x1.5 mult per trigger.
+      -- Card editions do NOT fire for held-in-hand effects;
+      -- they only fire in Phase 1 for scored cards.
+      if is_steel then
+        mult = mult * 1.5
+      end
+      -- Baron: x1.5 mult per held King, per Baron instance
+      if has_baron and is_king then
+        for _ = 1, baron_count do
+          mult = mult * 1.5
+        end
+      end
+      -- Shoot the Moon: +13 mult per held Queen, per instance
+      if has_shoot_moon and is_queen then
+        mult = mult + 13 * shoot_moon_count
+      end
+    end
+  end
+
+  for _, card in ipairs(all_cards) do
+    if not played[card] then apply_held_effects(card) end
+  end
+
+  -- DNA-created copies of the played card behave as extra held cards
+  -- for Phase 2 purposes.
+  if dna_copies > 0 then
+    local original = cards[1]
+    for _ = 1, dna_copies do
+      apply_held_effects(original)
     end
   end
 
@@ -1425,6 +1484,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
     poker_hands = poker_hands,
     full_hand   = cards,
     scoring_hand = scoring,
+    scoring_dollars = scoring_dollars,
   }
 
   -- `resolved` (built in Phase 1 above) provides the fallback path's
@@ -1497,14 +1557,17 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
         -- chip_mod  → additive chips  (e.g. Banner +30×discards)
         -- mult_mod  → additive mult   (e.g. Jolly Joker +8)
         -- Xmult_mod → multiplicative  (e.g. The Tribe ×2)
+        --
+        -- Edition composition: holo (+10 mult) and foil (+50 chips)
+        -- join the joker's additive pool BEFORE the Xmult step, so
+        -- e.g. Steel Joker ×11.4 with holo scores (m+10)×11.4, not
+        -- m×11.4+10. Polychrome ×1.5 stacks with the joker's Xmult.
         -------------------------------------------------------
+        chips, mult = edition_additive(joker.edition, chips, mult)
         chips = chips + (effect.chip_mod or 0)
         mult  = mult  + (effect.mult_mod or 0)
         if effect.Xmult_mod then mult = mult * effect.Xmult_mod end
-        -- Joker edition (foil/holo/polychrome) is applied
-        -- separately — the game does this after trigger_effects
-        -- returns, so it's NOT included in the effect table.
-        chips, mult = apply_edition(joker.edition, chips, mult)
+        chips, mult = edition_multiplicative(joker.edition, chips, mult)
       else
         -------------------------------------------------------
         -- Fallback: deny-listed, offline, or calculate returned
@@ -2274,6 +2337,7 @@ local function extract_game_state()
     local cr = G.GAME.current_round
     game.current_round = {
       hands_left    = cr.hands_left,
+      hands_played  = cr.hands_played,
       discards_left = cr.discards_left,
       dollars       = cr.dollars,
     }
