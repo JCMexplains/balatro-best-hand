@@ -1377,30 +1377,14 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- in the opposite order mis-scales jokers like Mad Joker holo
   -- that add flat mult on top of Baron's x1.5 multiplier.
   --
-  -- DNA duplication: if this is the first hand of the round and the
-  -- player played exactly one card, each DNA joker (including
-  -- Blueprint/Brainstorm copies) duplicates the played card into
-  -- G.hand during Phase 1. Those copies then fire held-in-hand
-  -- effects in Phase 2. Simulate by counting DNAs and iterating
-  -- the duplicates alongside the real held cards.
+  -- NOTE on DNA: when DNA fires, it emplaces a copy of the played card
+  -- into G.hand, but captures show the copy doesn't contribute to
+  -- THIS hand's Phase 2 scoring — presumably because the emplace lands
+  -- after Phase 2 has already snapshotted G.hand.cards. So treat DNA
+  -- as score-neutral for the current hand and let the copy affect
+  -- future hands only (via Steel Joker's full-deck count, Baron's
+  -- held-King check next hand, etc.).
   -------------------------------------------------
-  local dna_copies = 0
-  if #cards == 1 then
-    -- DNA's Balatro condition is G.GAME.current_round.hands_played == 0
-    -- (first hand of round) plus a 1-card scoring hand. Captures before
-    -- this field was extracted won't carry it; without the counter we
-    -- can't tell whether this was a first-hand replay or a later one
-    -- with identical visible state, so skip the duplication rather
-    -- than guess. Live-game F2 reads the real counter directly.
-    local cr = G.GAME and G.GAME.current_round
-    if cr and cr.hands_played == 0 then
-      for _, j in ipairs(resolved) do
-        if j.name == 'DNA' then
-          dna_copies = dna_copies + 1
-        end
-      end
-    end
-  end
 
   -- has_baron / baron_count / has_shoot_moon / shoot_moon_count are
   -- all read from `precomputed` — same reason Hiker is hoisted.
@@ -1434,15 +1418,6 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
 
   for _, card in ipairs(all_cards) do
     if not played[card] then apply_held_effects(card) end
-  end
-
-  -- DNA-created copies of the played card behave as extra held cards
-  -- for Phase 2 purposes.
-  if dna_copies > 0 then
-    local original = cards[1]
-    for _ = 1, dna_copies do
-      apply_held_effects(original)
-    end
   end
 
   -------------------------------------------------
