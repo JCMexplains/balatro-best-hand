@@ -479,6 +479,15 @@ end
 -------------------------------------------------------------------------
 local captures_dir = arg[1] or 'best_hand_captures'
 
+-- captures_dir is interpolated into a shell command below (dir /b on
+-- Windows, ls on POSIX). Reject anything outside a conservative
+-- path-character allowlist so a malicious argument can't inject
+-- commands via ", $, `, ;, &, |, newline, etc.
+if not captures_dir:match('^[%w%-._ :/\\]+$') then
+  io.stderr:write('refusing suspicious captures_dir: ' .. captures_dir .. '\n')
+  os.exit(1)
+end
+
 local function list_files(dir)
   local out = {}
   local win_dir = dir:gsub('/', '\\')

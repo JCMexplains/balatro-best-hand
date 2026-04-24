@@ -18,7 +18,7 @@ Copy this folder into your Balatro mods directory:
 
 ## What it handles
 
-Scoring dispatch goes through Balatro's own `Card:calculate_joker` on every joker, in every phase (`context.before`, `context.individual`, `context.joker_main`). Any joker the game ships scores with its real logic — no per-joker reimplementation in this mod. Explicit handling layers on top for:
+Scoring dispatch goes through Balatro's own `Card:calculate_joker` on every joker, in every phase (`context.before`, `context.individual`, `context.joker_main`), so each joker scores with the same code the game runs. Explicit handling layers on top for:
 
 - Every card enhancement (Bonus, Mult, Glass, Steel, Stone, Lucky, Gold, Wild)
 - Foil / Holo / Polychrome editions on cards and jokers (with Balatro's exact composition order: additive before the joker's Xmult, polychrome after)
@@ -35,7 +35,7 @@ The scoring pipeline mirrors Balatro's own phase order: `before` pre-pass, then 
 
 ## Known limitations
 
-- **Probabilistic effects** (Lucky Card, Bloodstone) use expected value in the primary prediction. Bloodstone's real `calculate_joker` calls `pseudorandom()` directly, so it's fallback-handled in EV mode (×1.25 per Heart instead of ×1.5). F4 captures still enumerate all probabilistic outcomes to find the actual one. Hands where EV contributed are tagged `(expected value)` in the F2 output.
+- **Probabilistic effects** (Lucky Card, Bloodstone) use expected value in the primary prediction. Bloodstone's real `calculate_joker` calls `pseudorandom()` directly, which can't resolve to an EV from inside the real dispatch — in EV mode it's computed separately (×1.25 per Heart, the expected value of a 50% ×1.5). F4 captures still enumerate all probabilistic outcomes to find the actual one. Hands where EV contributed are tagged `(expected value)` in the F2 output.
 - **Most boss blinds are not modeled.** The five listed above are handled; others (Verdant Leaf, The Needle, The Wall, etc.) are not — the mod will recommend hands as if there were no blind in effect.
 
 ## Fixture capture (regression harness)
@@ -49,6 +49,8 @@ Press **F4** to disable capture (or to re-enable it after disabling).
 ### Offline tools
 
 Both tools run from the mod directory with the Lua 5.1 interpreter and require `balatro_src/` to be present (a local extraction of Balatro's Lua source, gitignored and not shipped with this mod — drop it in if you want to run the tools).
+
+**Only run these tools on capture files you produced yourself.** Captures are Lua source and are loaded with `dofile` / `loadstring`, so an untrusted capture can execute arbitrary code on your machine.
 
 **`batch_verify.lua`** — replay every capture in a directory through `score_combo`, enumerate all probabilistic outcomes (Lucky Card / Bloodstone booleans × Misprint integer ranges), and report `ok` / `ok(var)` / `MISS` for each. Captured jokers are rehydrated with the `Card` metatable so scoring runs through the real `Card:calculate_joker` from `balatro_src/card.lua` — the same code the game uses in-engine.
 
