@@ -202,13 +202,24 @@ local function snapshot_ability(ability)
 end
 
 -------------------------------------------------------------------------
--- Hybrid scoring deny list: jokers whose real calculate_joker must NOT
--- be called during analysis. Misprint's calculate_joker calls
--- pseudorandom() which advances the RNG seed; we enumerate its range
--- via state.range_config instead (see eval_flat_jokers below).
+-- Hybrid scoring deny list for joker_main: jokers whose real
+-- calculate_joker has side effects our snapshot_ability can't roll
+-- back. Analysis runs every F2 press (~218 combos per hand), so even
+-- a single leaked side effect compounds fast.
+--
+-- Misprint:      pseudorandom('misprint') advances the RNG seed; we
+--                enumerate its [min, max] range via state.range_config.
+-- Vagabond:      creates a Tarot card (G.consumeables / consumeable_buffer).
+-- Superposition: creates a Tarot card.
+-- Seance:        creates a Spectral card.
+-- Matador:       calls ease_dollars (mutates G.GAME.dollars + dollar_buffer).
 -------------------------------------------------------------------------
 local joker_main_deny = {
-  ['Misprint'] = true,
+  ['Misprint']      = true,
+  ['Vagabond']      = true,
+  ['Superposition'] = true,
+  ['Seance']        = true,
+  ['Matador']       = true,
 }
 
 -------------------------------------------------------------------------
