@@ -9,3 +9,6 @@ Thumbs.db
 # Runtime debug dumps
 card_dump.txt
 best_hand_captures/
+
+# Local reference extraction of Balatro's Lua source. Not ours to commit.
+balatro_src/
