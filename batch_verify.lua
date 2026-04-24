@@ -1,23 +1,133 @@
--- batch_verify.lua — replay every saved capture through the real
--- BestHand.lua score_combo and report ok / ok(var) / MISS.
+-- batch_verify.lua — replay every capture through BestHand's
+-- score_combo and report ok / ok(var) / MISS.
 --
--- For each capture the harness enumerates every reachable score from
--- the cartesian product of boolean probabilistic events (Lucky Card,
--- Bloodstone) × integer range events (Misprint), bounded at 10,000
--- configurations. A capture passes ("ok") if the game's actual score
--- equals the EV prediction exactly, or ("ok(var)") if it falls within
--- the enumerated set.
+-- Jokers run through the real Card:calculate_joker code from
+-- balatro_src/ — the same code the game uses in-engine. We stub the
+-- minimum global surface, load card.lua + misc_functions.lua, and
+-- attach the Card metatable to captured jokers so BestHand's hybrid
+-- dispatch picks the real path.
+--
+-- Each capture is enumerated over the cartesian product of boolean
+-- probabilistic events (Lucky Card, Bloodstone) × integer range events
+-- (Misprint), bounded at 10,000 configurations. A capture passes "ok"
+-- when the game's actual score matches BestHand's EV prediction, or
+-- "ok(var)" when the actual falls somewhere in the enumerated set.
 --
 -- Usage: lua batch_verify.lua [captures_dir]
--- Default captures_dir: ./best_hand_captures (co-located with this
--- script inside the mod directory).
+-- Default captures_dir: ./best_hand_captures
+
+local SRC_DIR = 'balatro_src'
 
 -------------------------------------------------------------------------
--- Stub the Balatro globals BestHand.lua touches at load time.
+-- Object / Moveable — enough inheritance glue for `Card = Moveable:extend()`
 -------------------------------------------------------------------------
+Object = {}
+Object.__index = Object
+function Object:init() end
+function Object:extend()
+  local cls = {}
+  for k, v in pairs(self) do
+    if type(k) == 'string' and k:find('__') == 1 then cls[k] = v end
+  end
+  cls.__index = cls
+  cls.super = self
+  setmetatable(cls, self)
+  return cls
+end
+function Object:is(_) return false end
+function Object:__call(...)
+  local o = setmetatable({}, self)
+  if o.init then o:init(...) end
+  return o
+end
+
+Moveable = Object:extend()
+function Moveable:init() end
+function Moveable:move() end
+function Moveable:align() end
+function Moveable:hard_set_T() end
+function Moveable:juice_up() end
+
+-------------------------------------------------------------------------
+-- Minimum global surface that card.lua + misc_functions.lua touch.
+-- Most entries are no-ops; a few (pseudorandom, localize) must return
+-- a non-nil value because caller code indexes the result.
+-------------------------------------------------------------------------
+G = {
+  GAME = {
+    used_vouchers   = {},
+    probabilities   = { normal = 1 },
+    consumeable_buffer = 0,
+    round_resets    = { ante = 1 },
+    hands           = {},
+    current_round   = {},
+    blind           = { name = '', disabled = false },
+    dollars         = 0,
+    cards_played    = setmetatable({}, { __index = function()
+      return { total = 0, suits = {} }
+    end }),
+  },
+  P_CENTERS     = {},          -- populated below from game.lua
+  P_CENTER_POOLS = { Joker = {} },
+  C             = setmetatable({}, { __index = function() return {} end }),
+  jokers        = { cards = {}, config = { card_limit = 5 } },
+  consumeables  = { cards = {}, config = { card_limit = 2 } },
+  hand          = { cards = {} },
+  play          = { cards = {} },
+  deck          = { cards = {} },
+  playing_cards = {},
+  E_MANAGER     = { add_event = function() end },
+  FUNCS         = {},
+  RESET_JIGGLES = false,
+}
+
 SMODS = {}
-function SMODS.Keybind(_) end
 function SMODS.calculate_round_score() return 0 end
+function SMODS.Keybind(_) end
+
+function pseudorandom(_) return 0 end   -- deterministic; BestHand's
+function pseudoseed(_) return 'seed' end -- enumeration drives variance
+function pseudorandom_element(t) return t and t[1] or nil, 1 end
+
+function Event(e) return e end
+function Tag(_)   return {} end
+function play_sound() end
+function card_eval_status_text() end
+function juice_card_until() end
+function juice_card() end
+function update_hand_text() end
+function attention_text() end
+function ease_colour() end
+function ease_dollars() end
+function add_tag() end
+function delay() end
+function highlight_card() end
+function copy_card(c) return c end
+function create_card() return setmetatable({ ability = {}, base = {} }, nil) end
+function check_for_unlock() end
+function level_up_hand() end
+function set_hand_usage() end
+function inc_career_stat() end
+function nominal_chip_inc() end
+function save_run() end
+function add_round_eval_row() end
+function mod_chips(n) return n end
+function mod_mult(n) return n end
+function HEX() return { 0, 0, 0, 1 } end
+function EMPTY(t) for k in pairs(t or {}) do t[k] = nil end return t end
+
+function find_joker(name)
+  local out = {}
+  for _, j in ipairs(G.jokers.cards or {}) do
+    if j.ability and j.ability.name == name then out[#out+1] = j end
+  end
+  return out
+end
+
+-- localize must never return nil — many branches index its result.
+function localize(_)
+  return setmetatable({}, { __index = function() return '' end })
+end
 
 love = {
   filesystem = {
@@ -26,153 +136,82 @@ love = {
   },
 }
 
-G = {
-  FUNCS        = {},
-  GAME         = {},
-  jokers       = { cards = {} },
-  hand         = { cards = {} },
-  play         = { cards = {} },
-  playing_cards = {},
-  deck         = { cards = {} },
-}
-
 -------------------------------------------------------------------------
--- Minimal poker-hand detector. score_combo calls
--- G.FUNCS.get_poker_hand_info both with the full played set and (for
--- Straight / SF / RF hands) with subsets during get_straight_members.
--- Handles Smeared Joker suit merging and Four Fingers threshold.
+-- Load Balatro source: card.lua (for Card class + methods) and
+-- misc_functions.lua (for evaluate_poker_hand / get_X_same / get_flush
+-- / get_straight / get_highest).
 -------------------------------------------------------------------------
--- Minimal stand-in for Balatro's G.FUNCS.get_poker_hand_info.
--- Must handle Wild Card (counts as any suit for flush detection),
--- Stone Card (excluded from flush/straight/pair groupings), Smeared
--- Joker (H+D and S+C merge), and Four Fingers (min_run drops to 4).
-local function detect_hand(cards)
-  if not cards or #cards == 0 then return 'High Card', nil, {} end
-
-  -- Split into plain / wild / stone, since each participates
-  -- differently in hand detection.
-  local plain_sc = { Hearts = 0, Diamonds = 0, Clubs = 0, Spades = 0 }
-  local wild_count = 0
-  local rank_cards = {}  -- cards that participate in rank groups
-  for _, c in ipairs(cards) do
-    local en = c.ability and c.ability.name
-    if en == 'Stone Card' then
-      -- Stone Cards don't contribute to flush/straight/pair detection
-    elseif en == 'Wild Card' then
-      wild_count = wild_count + 1
-      rank_cards[#rank_cards + 1] = c
-    else
-      if plain_sc[c.base.suit] then
-        plain_sc[c.base.suit] = plain_sc[c.base.suit] + 1
-      end
-      rank_cards[#rank_cards + 1] = c
-    end
+local function load_src(name)
+  local path = SRC_DIR .. '/' .. name
+  local ok, err = pcall(dofile, path)
+  if not ok then
+    io.stderr:write('[shim] failed to load ' .. path .. ': ' .. tostring(err) .. '\n')
+    os.exit(1)
   end
-
-  local smeared, four_fingers = false, false
-  if G.jokers and G.jokers.cards then
-    for _, j in ipairs(G.jokers.cards) do
-      local n = j.ability and j.ability.name
-      if n == 'Smeared Joker' then smeared = true end
-      if n == 'Four Fingers'  then four_fingers = true end
-    end
-  end
-
-  local min_run = four_fingers and 4 or 5
-
-  -- Flush: any suit (+ wild cards) reaches min_run
-  local is_flush = false
-  if #rank_cards >= min_run then
-    for _, n in pairs(plain_sc) do
-      if n + wild_count >= min_run then
-        is_flush = true
-        break
-      end
-    end
-    if not is_flush and smeared then
-      if plain_sc.Hearts + plain_sc.Diamonds + wild_count >= min_run
-        or plain_sc.Clubs + plain_sc.Spades + wild_count >= min_run then
-        is_flush = true
-      end
-    end
-  end
-
-  -- Straight: unique consecutive IDs with wheel A-2-3-4-5
-  local ids, seen = {}, {}
-  for _, c in ipairs(rank_cards) do
-    local id = c.base.id
-    if not seen[id] then
-      seen[id] = true
-      ids[#ids + 1] = id
-    end
-  end
-  table.sort(ids)
-
-  local is_straight = false
-  if #ids >= min_run then
-    local run = 1
-    for i = 2, #ids do
-      if ids[i] - ids[i - 1] == 1 then
-        run = run + 1
-        if run >= min_run then
-          is_straight = true
-          break
-        end
-      else
-        run = 1
-      end
-    end
-    if not is_straight and seen[14] and seen[2] and seen[3]
-      and seen[4] and (seen[5] or four_fingers) then
-      is_straight = true
-    end
-  end
-
-  -- Rank multiplicities (Stone Cards excluded above)
-  local groups = {}
-  for _, c in ipairs(rank_cards) do
-    groups[c.base.id] = (groups[c.base.id] or 0) + 1
-  end
-  local counts = {}
-  for _, n in pairs(groups) do counts[#counts + 1] = n end
-  table.sort(counts, function(a, b) return a > b end)
-  local c1, c2 = counts[1] or 0, counts[2] or 0
-
-  if is_flush and is_straight then
-    if seen[10] and seen[11] and seen[12] and seen[13] and seen[14] then
-      return 'Royal Flush', nil, {}
-    end
-    return 'Straight Flush', nil, {}
-  end
-  if c1 == 5 and is_flush then return 'Flush Five', nil, {} end
-  if c1 == 5 then return 'Five of a Kind', nil, {} end
-  if c1 == 3 and c2 == 2 and is_flush then return 'Flush House', nil, {} end
-  if c1 == 4 then return 'Four of a Kind', nil, {} end
-  if c1 == 3 and c2 == 2 then return 'Full House', nil, {} end
-  if is_flush   then return 'Flush', nil, {} end
-  if is_straight then return 'Straight', nil, {} end
-  if c1 == 3 then return 'Three of a Kind', nil, {} end
-  if c1 == 2 and c2 == 2 then return 'Two Pair', nil, {} end
-  if c1 == 2 then return 'Pair', nil, {} end
-  return 'High Card', nil, {}
 end
 
-function G.FUNCS.get_poker_hand_info(cards) return detect_hand(cards) end
-function G.FUNCS.evaluate_play(e) end
+load_src('card.lua')
+load_src('functions/misc_functions.lua')
+
+-- misc_functions.lua defines a real `localize` that reaches into
+-- G.localization. Re-stub so our no-op wins.
+function localize(_)
+  return setmetatable({}, { __index = function() return '' end })
+end
+
+assert(Card and Card.calculate_joker, 'Card:calculate_joker missing')
+assert(evaluate_poker_hand, 'evaluate_poker_hand missing')
+
+-- Suit nominals populated by Card:set_base; captures don't record them.
+local SUIT_NOMINAL = { Diamonds = 0.01, Clubs = 0.02, Hearts = 0.03, Spades = 0.04 }
+local SUIT_NOMINAL_ORIG = { Diamonds = 0.001, Clubs = 0.002, Hearts = 0.003, Spades = 0.004 }
 
 -------------------------------------------------------------------------
--- Sandboxed fixture loader.
---
--- Capture files are Lua source (`return { ... }`) loaded at replay
--- time. Using bare `dofile()` would execute anything the file
--- contains with full Lua privileges (io, os.execute, etc.), which is
--- fine for captures you produced locally but risky for third-party
--- captures (bug reports, shared fixtures). This helper parses the
--- file in an empty environment exposing only `math.huge` — the single
--- global the serializer is allowed to emit (for rare ±infinity
--- numbers). Table/string/number/bool/nil literals don't touch the
--- env, so a well-formed capture loads unchanged while anything that
--- reaches for `io`, `os`, `require`, etc. fails with a nil index.
+-- Extract the P_CENTERS block from game.lua (lines 364..702 of that
+-- file form the data table; entries reference no helpers). We re-emit
+-- it as `return { ... }` and loadstring it to recover the table.
+-------------------------------------------------------------------------
+local function extract_p_centers()
+  local f = assert(io.open(SRC_DIR .. '/game.lua', 'r'))
+  local in_block, depth, buf = false, 0, { 'return {' }
+  for line in f:lines() do
+    if not in_block then
+      if line:match('self%.P_CENTERS%s*=%s*{') then
+        in_block = true
+        depth = 1
+      end
+    else
+      -- naive brace accounting: count unescaped { and } on the line
+      local opens = select(2, line:gsub('{', ''))
+      local closes = select(2, line:gsub('}', ''))
+      depth = depth + opens - closes
+      if depth <= 0 then
+        buf[#buf+1] = '}'
+        break
+      end
+      buf[#buf+1] = line
+    end
+  end
+  f:close()
+  local src = table.concat(buf, '\n')
+  local chunk, err = loadstring(src, 'P_CENTERS')
+  if not chunk then error('P_CENTERS parse: ' .. tostring(err)) end
+  return chunk()
+end
+
+G.P_CENTERS = extract_p_centers()
+
+-- Build a display-name → center key index so we can look up config
+-- data from a capture that only recorded `ability.name`.
+local name_to_key = {}
+for key, center in pairs(G.P_CENTERS) do
+  if type(center) == 'table' and center.name and center.set == 'Joker' then
+    name_to_key[center.name] = key
+  end
+end
+
+-------------------------------------------------------------------------
+-- Capture loading (sandboxed, same as batch_verify.lua)
 -------------------------------------------------------------------------
 local function load_fixture(path)
   local f, oerr = io.open(path, 'r')
@@ -188,78 +227,181 @@ local function load_fixture(path)
 end
 
 -------------------------------------------------------------------------
--- Load BestHand.lua with export block
+-- Load BestHand.lua with score_combo export (unchanged from v1)
 -------------------------------------------------------------------------
-local f = assert(io.open('BestHand.lua', 'r'))
-local src = f:read('*a')
-f:close()
-src = src .. '\n_G._BH = { score_combo = score_combo }\n'
-local chunk = assert(loadstring(src, 'BestHand'))
-chunk()
-assert(_BH and _BH.score_combo, 'score_combo export failed')
+do
+  local f = assert(io.open('BestHand.lua', 'r'))
+  local src = f:read('*a')
+  f:close()
+  src = src .. '\n_G._BH = { score_combo = score_combo }\n'
+  local chunk = assert(loadstring(src, 'BestHand'))
+  chunk()
+  assert(_BH and _BH.score_combo, 'score_combo export failed')
+end
 
 -------------------------------------------------------------------------
--- Rehydrate a saved fixture into live G state, then score it.
+-- Real G.FUNCS.get_poker_hand_info, built on evaluate_poker_hand.
+-- Requires cards to have :get_id, :is_suit, :get_nominal — we attach
+-- the Card metatable to played/held cards when rehydrating fixtures.
 -------------------------------------------------------------------------
-local function ensure_card(t)
-  -- Captures already store the shape score_combo expects. Just
-  -- guarantee the few fields that may be absent.
+function G.FUNCS.get_poker_hand_info(cards)
+  local poker_hands = evaluate_poker_hand(cards)
+  local text, scoring_hand = 'NULL', {}
+  local order = {
+    'Flush Five', 'Flush House', 'Five of a Kind', 'Straight Flush',
+    'Four of a Kind', 'Full House', 'Flush', 'Straight',
+    'Three of a Kind', 'Two Pair', 'Pair', 'High Card',
+  }
+  for _, name in ipairs(order) do
+    if next(poker_hands[name]) then
+      text = name
+      scoring_hand = poker_hands[name][1]
+      break
+    end
+  end
+  local disp_text = text
+  if text == 'Straight Flush' then
+    local min = 10
+    for j = 1, #scoring_hand do
+      if scoring_hand[j]:get_id() < min then min = scoring_hand[j]:get_id() end
+    end
+    if min >= 10 then disp_text = 'Royal Flush' end
+  end
+  return text, disp_text, poker_hands, scoring_hand, disp_text
+end
+function G.FUNCS.evaluate_play(_) end
+
+-------------------------------------------------------------------------
+-- Fixture rehydration with Card metatable so :calculate_joker,
+-- :get_id, :is_suit, :get_nominal, :get_chip_bonus etc. dispatch to
+-- balatro_src/card.lua methods.
+-------------------------------------------------------------------------
+local unique_id_seq = 0
+local function attach_card(t)
   t.ability = t.ability or {}
   t.ability.perma_bonus = t.ability.perma_bonus or 0
+  t.ability.bonus = t.ability.bonus or 0
+  t.ability.mult  = t.ability.mult  or 0
   t.base    = t.base or {}
+  t.base.nominal = t.base.nominal or 0
+  t.base.suit_nominal = t.base.suit_nominal or SUIT_NOMINAL[t.base.suit] or 0
+  t.base.suit_nominal_original = t.base.suit_nominal_original
+    or SUIT_NOMINAL_ORIG[t.base.suit] or 0
+  t.base.face_nominal = t.base.face_nominal or 0
+  unique_id_seq = unique_id_seq + 1
+  t.unique_val = t.unique_val or unique_id_seq
   t.debuff  = t.debuff or false
+  -- Default ability.effect for enhancements Balatro uses in Card methods
+  if t.ability.name == 'Stone Card' then
+    t.ability.effect = t.ability.effect or 'Stone Card'
+  elseif t.ability.name == 'Wild Card' then
+    t.ability.effect = t.ability.effect or 'Wild Card'
+  elseif t.ability.name == 'Glass Card' then
+    t.ability.effect = t.ability.effect or 'Glass Card'
+    t.ability.x_mult = t.ability.x_mult or 2
+  elseif t.ability.name == 'Steel Card' then
+    t.ability.effect = t.ability.effect or 'Steel Card'
+    t.ability.h_x_mult = t.ability.h_x_mult or 1.5
+  elseif t.ability.name == 'Mult' then
+    t.ability.effect = t.ability.effect or 'Mult Card'
+  elseif t.ability.name == 'Lucky Card' then
+    t.ability.effect = t.ability.effect or 'Lucky Card'
+    t.ability.mult = t.ability.mult ~= 0 and t.ability.mult or 20
+  elseif t.ability.name == 'Gold Card' then
+    t.ability.effect = t.ability.effect or 'Gold Card'
+  elseif t.ability.name == 'Bonus' then
+    t.ability.effect = t.ability.effect or 'Bonus'
+    t.ability.bonus = t.ability.bonus ~= 0 and t.ability.bonus or 30
+  end
+  setmetatable(t, { __index = Card })
   return t
 end
 
-local function ensure_joker(t)
-  t.ability   = t.ability or {}
-  t.ability.mult     = t.ability.mult     or 0
-  t.ability.x_mult   = t.ability.x_mult   or 1
-  t.ability.chips    = t.ability.chips    or 0
-  t.ability.t_mult   = t.ability.t_mult   or 0
-  t.ability.t_chips  = t.ability.t_chips  or 0
+local function attach_joker(t)
+  t.ability = t.ability or {}
+  t.ability.mult        = t.ability.mult        or 0
+  t.ability.x_mult      = t.ability.x_mult      or 1
+  t.ability.chips       = t.ability.chips       or 0
+  t.ability.t_mult      = t.ability.t_mult      or 0
+  t.ability.t_chips     = t.ability.t_chips     or 0
   t.ability.perma_bonus = t.ability.perma_bonus or 0
+  t.ability.set         = t.ability.set         or 'Joker'
   t.debuff = t.debuff or false
+
+  -- Pull config.extra (and other config fields) from P_CENTERS if the
+  -- capture didn't record them. copy_scalars in BestHand drops scalar
+  -- values of ability.extra, so most captures lack this.
+  local key = name_to_key[t.ability.name]
+  if key and G.P_CENTERS[key] then
+    local cfg = G.P_CENTERS[key].config or {}
+    if t.ability.extra == nil then
+      -- extra may be a scalar (e.g. 0.2) or a table (e.g. {s_mult=3, suit='Diamonds'})
+      if type(cfg.extra) == 'table' then
+        local copy = {}
+        for k, v in pairs(cfg.extra) do copy[k] = v end
+        t.ability.extra = copy
+      else
+        t.ability.extra = cfg.extra
+      end
+    end
+    -- Some centers encode base mult/chips at config level; seed them
+    -- if the capture missed them (copy_scalars drops 0).
+    if cfg.mult and t.ability.mult == 0 then t.ability.mult = cfg.mult end
+    if cfg.chips and t.ability.chips == 0 then t.ability.chips = cfg.chips end
+    -- Attach center so calculate_joker can reach rarity etc.
+    t.config = t.config or {}
+    t.config.center = G.P_CENTERS[key]
+  end
+
+  setmetatable(t, { __index = Card })
   return t
 end
 
 local function install_fixture(fx)
   local played, held = {}, {}
-  for i, c in ipairs(fx.played) do played[i] = ensure_card(c) end
-  for i, c in ipairs(fx.held)   do held[i]   = ensure_card(c) end
+  for i, c in ipairs(fx.played) do played[i] = attach_card(c) end
+  for i, c in ipairs(fx.held)   do held[i]   = attach_card(c) end
 
   G.jokers.cards = {}
-  for i, j in ipairs(fx.jokers) do G.jokers.cards[i] = ensure_joker(j) end
+  for i, j in ipairs(fx.jokers) do G.jokers.cards[i] = attach_joker(j) end
 
-  G.GAME = {
-    hands         = fx.game.hands or {},
-    current_round = fx.game.current_round or {},
-    blind         = fx.game.blind or { name = '', disabled = false },
-    dollars       = fx.game.dollars or 0,
-  }
+  G.GAME.hands         = fx.game.hands or {}
+  G.GAME.current_round = fx.game.current_round or {}
+  G.GAME.blind         = fx.game.blind or { name = '', disabled = false }
+  G.GAME.dollars       = fx.game.dollars or 0
 
   G.playing_cards = {}
-  for _, c in ipairs(played) do G.playing_cards[#G.playing_cards + 1] = c end
-  for _, c in ipairs(held)   do G.playing_cards[#G.playing_cards + 1] = c end
+  for _, c in ipairs(played) do G.playing_cards[#G.playing_cards+1] = c end
+  for _, c in ipairs(held)   do G.playing_cards[#G.playing_cards+1] = c end
 
-  -- If the capture recorded the total Steel Card count across the full
-  -- deck (for Steel Joker), pad G.playing_cards with dummy Steel Cards
-  -- so the offline count matches the live game.
+  -- Reconstruct Steel Card total if the capture recorded it. Pad with
+  -- dummy Steel Cards (attached to Card metatable so :get_id works).
   local steel_target = fx.game.steel_card_count
   if steel_target then
-    local steel_have = 0
+    local have = 0
     for _, c in ipairs(G.playing_cards) do
-      if c.ability and c.ability.name == 'Steel Card' then
-        steel_have = steel_have + 1
-      end
+      if c.ability and c.ability.name == 'Steel Card' then have = have + 1 end
     end
-    for _ = 1, steel_target - steel_have do
-      G.playing_cards[#G.playing_cards + 1] = {
+    for _ = 1, steel_target - have do
+      G.playing_cards[#G.playing_cards+1] = attach_card({
         ability = { name = 'Steel Card' },
-        base = { id = 0, suit = 'Spades', nominal = 0 },
-        debuff = false,
-      }
+        base    = { id = 0, suit = 'Spades', nominal = 0 },
+        debuff  = false,
+      })
     end
+  end
+
+  -- Maintain tallies that Balatro normally updates via add_to_deck
+  -- hooks — used by Steel Joker / Stone Joker / Marble.
+  local steel, stone = 0, 0
+  for _, c in ipairs(G.playing_cards) do
+    local name = c.ability and c.ability.name
+    if name == 'Steel Card' then steel = steel + 1 end
+    if name == 'Stone Card' then stone = stone + 1 end
+  end
+  for _, j in ipairs(G.jokers.cards) do
+    if j.ability.steel_tally == nil then j.ability.steel_tally = steel end
+    if j.ability.stone_tally == nil then j.ability.stone_tally = stone end
   end
 
   G.deck.cards = {}
@@ -268,11 +410,14 @@ local function install_fixture(fx)
   return played, held
 end
 
+-------------------------------------------------------------------------
+-- Scoring + probabilistic enumeration (copied from batch_verify.lua)
+-------------------------------------------------------------------------
 local function score_fixture(fx)
   local played, held = install_fixture(fx)
   local all = {}
-  for _, c in ipairs(played) do all[#all + 1] = c end
-  for _, c in ipairs(held)   do all[#all + 1] = c end
+  for _, c in ipairs(played) do all[#all+1] = c end
+  for _, c in ipairs(held)   do all[#all+1] = c end
 
   local _, ev_score, _, _, n_prob, range_events =
     _BH.score_combo(played, all, nil, nil)
@@ -280,14 +425,9 @@ local function score_fixture(fx)
   range_events = range_events or {}
   local n_range = #range_events
 
-  -- Discrete enumeration over the cartesian product of boolean probs
-  -- (Lucky/Bloodstone) × each Misprint integer in [min, max].
   local possible, seen = {}, {}
   local function add(s)
-    if not seen[s] then
-      seen[s] = true
-      possible[#possible + 1] = s
-    end
+    if not seen[s] then seen[s] = true; possible[#possible+1] = s end
   end
 
   local range_total = 1
@@ -316,7 +456,6 @@ local function score_fixture(fx)
       end
     end
   else
-    -- Too many configs to enumerate; fall back to EV only.
     add(ev_score)
   end
   table.sort(possible)
@@ -324,26 +463,22 @@ local function score_fixture(fx)
 end
 
 -------------------------------------------------------------------------
--- Walk captures dir
+-- Walk captures dir (reused from batch_verify.lua)
 -------------------------------------------------------------------------
 local captures_dir = arg[1] or 'best_hand_captures'
 
 local function list_files(dir)
   local out = {}
-  -- Lua for Windows uses cmd.exe for io.popen, so try `dir /b` first.
   local win_dir = dir:gsub('/', '\\')
   local p = io.popen('dir /b "' .. win_dir .. '\\*.lua" 2>nul')
   if p then
-    for line in p:lines() do
-      out[#out + 1] = dir .. '/' .. line
-    end
+    for line in p:lines() do out[#out+1] = dir .. '/' .. line end
     p:close()
   end
   if #out == 0 then
-    -- Unix fallback
     p = io.popen('ls "' .. dir .. '"/*.lua 2>/dev/null')
     if p then
-      for line in p:lines() do out[#out + 1] = line end
+      for line in p:lines() do out[#out+1] = line end
       p:close()
     end
   end
@@ -367,61 +502,38 @@ local misses = {}
 
 for _, path in ipairs(files) do
   local fx, lerr = load_fixture(path)
-  local ok = fx ~= nil and type(fx) == 'table'
-  if not ok then
+  if not fx or type(fx) ~= 'table' then
     print(string.format('!! %s: failed to load (%s)', basename(path), tostring(lerr or fx)))
     miss = miss + 1
   else
-    local ok2, ev_score, possible, n_prob, n_range, total_configs =
-      pcall(score_fixture, fx)
+    local ok2, ev_score, possible, n_prob, n_range = pcall(score_fixture, fx)
     if not ok2 then
       print(string.format('!! %s: score error (%s)', basename(path), tostring(ev_score)))
       miss = miss + 1
     else
       local actual = fx.actual_score
-      -- For very large scores, floating-point rounding in floor()
-      -- can produce ULP differences. Use relative tolerance.
       local hit_exact = (actual == ev_score)
         or (actual ~= 0 and math.abs(actual - ev_score) / math.abs(actual) < 1e-9)
-      local hit_any   = false
-      local probabilistic = (n_prob + n_range) > 0
-      if not hit_exact and probabilistic then
+      local hit_any = false
+      if not hit_exact and (n_prob + n_range) > 0 then
         for _, s in ipairs(possible) do
-          if s == actual then
-            hit_any = true
-            break
-          end
+          if s == actual then hit_any = true; break end
         end
       end
-
-      local stored = fx.predicted_score
-      local regressed = stored and ev_score ~= stored
-
       if hit_exact then
         strict = strict + 1
-        local tag = regressed and
-          string.format(' [REGRESSED from stored %s]', tostring(stored)) or ''
-        print(string.format('  ok      %-45s %-16s  ev=%-10s actual=%s%s',
-          basename(path), fx.hand_name, tostring(ev_score),
-          tostring(actual), tag))
+        print(string.format('  ok      %-45s %-16s  ev=%-10s actual=%s',
+          basename(path), fx.hand_name, tostring(ev_score), tostring(actual)))
       elseif hit_any then
         via_variance = via_variance + 1
-        print(string.format('  ok(var) %-45s %-16s  ev=%-10s actual=%-10s (1 of %d possible, n_prob=%d n_range=%d)',
-          basename(path), fx.hand_name, tostring(ev_score),
-          tostring(actual), #possible, n_prob, n_range))
+        print(string.format('  ok(var) %-45s %-16s  ev=%-10s actual=%-10s (1 of %d, n_prob=%d n_range=%d)',
+          basename(path), fx.hand_name, tostring(ev_score), tostring(actual), #possible, n_prob, n_range))
       else
         miss = miss + 1
-        misses[#misses + 1] = {
-          file = basename(path), hand = fx.hand_name,
-          ev = ev_score, actual = actual, stored = stored,
-          possible = possible, n_prob = n_prob, n_range = n_range,
-          total_configs = total_configs,
-        }
-        local tag = regressed and
-          string.format(' [REGRESSED from stored %s]', tostring(stored)) or ''
-        print(string.format('  MISS    %-45s %-16s  ev=%-10s actual=%-10s n_prob=%d n_range=%d%s',
-          basename(path), fx.hand_name, tostring(ev_score),
-          tostring(actual), n_prob, n_range, tag))
+        misses[#misses+1] = { file = basename(path), hand = fx.hand_name,
+          ev = ev_score, actual = actual, possible = possible }
+        print(string.format('  MISS    %-45s %-16s  ev=%-10s actual=%-10s n_prob=%d n_range=%d',
+          basename(path), fx.hand_name, tostring(ev_score), tostring(actual), n_prob, n_range))
       end
     end
   end
@@ -437,18 +549,6 @@ if #misses > 0 then
   for _, m in ipairs(misses) do
     print(string.format('  %s (%s): ev=%s actual=%s',
       m.file, m.hand, tostring(m.ev), tostring(m.actual)))
-    if (m.n_prob + m.n_range) > 0 then
-      local line = '    possible (' .. #m.possible .. '): '
-      local shown = math.min(12, #m.possible)
-      for i = 1, shown do
-        line = line .. tostring(m.possible[i])
-        if i < shown then line = line .. ', ' end
-      end
-      if #m.possible > shown then
-        line = line .. ', … (' .. (#m.possible - shown) .. ' more)'
-      end
-      print(line)
-    end
   end
 end
 
