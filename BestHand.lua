@@ -7,8 +7,6 @@
 --       card combos, estimated points, and (when order matters) the
 --       optimal left-to-right card arrangement to drag into before
 --       playing.
---   F3  Dump the first hand card + all jokers + G.GAME.current_round
---       to card_dump.txt in the Balatro save directory.
 --   F4  Toggle fixture capture on/off (on by default — see bottom of
 --       this file for the regression harness).
 --   F5  Toggle debug timing: log wall-clock for the F2 search and
@@ -1793,52 +1791,12 @@ SMODS.Keybind({
       end
       lines[#lines + 1] = line
     end
+    -- Trailing blanks separate the F2 output from Lovely's DT logs that
+    -- flood the console after every keypress.
+    lines[#lines + 1] = ''
+    lines[#lines + 1] = ''
+    lines[#lines + 1] = ''
     for _, line in ipairs(lines) do print(line) end
-  end
-})
-
--------------------------------------------------------------------------
--- F3 keybind: dump all card and joker properties to a file for debugging
--------------------------------------------------------------------------
-SMODS.Keybind({
-  key_pressed = 'f3',
-  action = function(self)
-    local out = {}
-    local card = G.hand and G.hand.cards and G.hand.cards[1]
-    local function dump(t, prefix, depth)
-      if depth > 4 or type(t) ~= 'table' then return end
-      for k, v in pairs(t) do
-        local key = prefix .. '.' .. tostring(k)
-        if type(v) == 'table' then
-          dump(v, key, depth + 1)
-        else
-          out[#out + 1] = key .. ' = ' .. tostring(v)
-        end
-      end
-    end
-    if card then
-      dump(card, 'card', 0)
-    else
-      print('F3: no hand to dump — press F3 during a round, while cards are in your hand')
-      return
-    end
-    if G.jokers and G.jokers.cards then
-      for i, joker in ipairs(G.jokers.cards) do
-        dump(joker, 'joker[' .. i .. ']', 0)
-      end
-    end
-    -- Dump G.GAME.current_round so we can find where Balatro stores
-    -- per-round joker state (e.g. Ancient Joker's chosen suit lives
-    -- on current_round.ancient_card, The Idol's target on idol_card)
-    if G.GAME and G.GAME.current_round then
-      dump(G.GAME.current_round, 'current_round', 0)
-    end
-    table.sort(out)
-    local path = love.filesystem.getSaveDirectory() .. '/card_dump.txt'
-    local f = io.open(path, 'w')
-    for _, line in ipairs(out) do f:write(line .. '\n') end
-    f:close()
-    print('Written to ' .. path)
   end
 })
 
