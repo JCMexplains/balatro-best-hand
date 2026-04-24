@@ -240,6 +240,45 @@ local before_deny = {
 }
 
 -------------------------------------------------------------------------
+-- Jokers whose real calculate_joker has a context.before branch in
+-- card.lua (3411-3569). analyze_hand skips run_before_pass entirely
+-- when no present joker is in this set — saves N snapshots + N pcalls
+-- per combo (~218 combos/F2).
+-------------------------------------------------------------------------
+local has_before_branch = {
+  ['Spare Trousers'] = true, ['Space Joker']  = true,
+  ['Square Joker']   = true, ['Runner']       = true,
+  ['Midas Mask']     = true, ['Vampire']      = true,
+  ['To Do List']     = true, ['DNA']          = true,
+  ['Ride the Bus']   = true, ['Obelisk']      = true,
+  ['Green Joker']    = true,
+}
+
+-------------------------------------------------------------------------
+-- Jokers whose real calculate_joker has a context.individual branch
+-- in cardarea=G.play (card.lua 3065-3270). Plus ability.effect=='Suit
+-- Mult' (Greedy/Lusty/Wrathful/Gluttonous, which dispatch generically
+-- on the suit in their ability.extra). eval_per_card_jokers skips the
+-- real dispatch loop when no present joker is in this set.
+-------------------------------------------------------------------------
+local has_individual_branch = {
+  ['Hiker']          = true, ['Lucky Cat']    = true,
+  ['Wee Joker']      = true, ['Photograph']   = true,
+  ['8 Ball']         = true, ['The Idol']     = true,
+  ['Scary Face']     = true, ['Smiley Face']  = true,
+  ['Golden Ticket']  = true, ['Scholar']      = true,
+  ['Walkie Talkie']  = true, ['Business Card'] = true,
+  ['Fibonacci']      = true, ['Even Steven']  = true,
+  ['Odd Todd']       = true, ['Rough Gem']    = true,
+  ['Onyx Agate']     = true, ['Arrowhead']    = true,
+  ['Bloodstone']     = true, ['Ancient Joker'] = true,
+  ['Triboulet']      = true,
+  -- Suit Mult jokers dispatch via ability.effect, not name:
+  ['Greedy Joker']   = true, ['Lusty Joker']    = true,
+  ['Wrathful Joker'] = true, ['Gluttonous Joker'] = true,
+}
+
+-------------------------------------------------------------------------
 -- context.individual deny list: jokers whose per-card dispatch either
 -- calls pseudorandom (breaking EV estimation) or mutates state we
 -- can't cleanly roll back (G.GAME.dollar_buffer, other_card ability).
@@ -735,6 +774,11 @@ local function build_combo_precomputed(resolved)
   local has_baron, baron_count = false, 0
   local has_shoot_moon, shoot_moon_count = false, 0
   local has_baseball_card = false
+  -- Phase gates: skip run_before_pass / per-card real dispatch when
+  -- no joker in the (resolved) list has a branch for that context.
+  -- Huge win on common joker loadouts (Blueprint + copy jokers +
+  -- Steel Joker) where neither phase contributes anything.
+  local run_before, run_individual = false, false
   for _, j in ipairs(resolved) do
     local n = j.name
     if n == 'Pareidolia' then
@@ -750,6 +794,8 @@ local function build_combo_precomputed(resolved)
     elseif n == 'Baseball Card' then
       has_baseball_card = true
     end
+    if has_before_branch[n] then run_before = true end
+    if has_individual_branch[n] then run_individual = true end
   end
   return {
     resolved          = resolved,
@@ -760,6 +806,8 @@ local function build_combo_precomputed(resolved)
     has_shoot_moon    = has_shoot_moon,
     shoot_moon_count  = shoot_moon_count,
     has_baseball_card = has_baseball_card,
+    run_before        = run_before,
+    run_individual    = run_individual,
   }
 end
 
@@ -819,7 +867,7 @@ end
 -------------------------------------------------------------------------
 local function eval_per_card_jokers(
   card, resolved, chips, mult, state, pareidolia,
-  cards, scoring, hand_name, poker_hands
+  cards, scoring, hand_name, poker_hands, run_individual
 )
   local jokers = G.jokers and G.jokers.cards or {}
 
@@ -828,7 +876,12 @@ local function eval_per_card_jokers(
       local name = joker.ability.name or ''
       local effect = nil
 
-      if joker.calculate_joker
+      -- Skip the real-dispatch loop entirely when no joker in the
+      -- current roster has a context.individual branch — avoids ~N
+      -- snapshot_ability allocations + calculate_joker pcalls per
+      -- (card × trigger). run_individual is computed once per F2.
+      if run_individual
+        and joker.calculate_joker
         and not per_card_deny[name]
         and not joker_main_deny[name]
         and poker_hands then
@@ -1038,7 +1091,8 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- context.before pre-pass: scaling jokers bump their ability.* here.
   -- Must be restored before return so the next combo iteration sees
   -- the same pre-hand state.
-  local before_snapshots = run_before_pass(cards, scoring, hand_name, poker_hands)
+  local before_snapshots = run_before and
+    run_before_pass(cards, scoring, hand_name, poker_hands) or nil
 
   -- Unpack per-F2 invariants. analyze_hand's combo loop builds these
   -- once and passes them in; single-shot callers get a lazy build.
@@ -1054,6 +1108,8 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   local has_shoot_moon    = precomputed.has_shoot_moon
   local shoot_moon_count  = precomputed.shoot_moon_count
   local has_baseball_card = precomputed.has_baseball_card
+  local run_before        = precomputed.run_before
+  local run_individual    = precomputed.run_individual
 
   -- Cross-card state for per-card joker effects.
   -- used_ev gets flipped true whenever a probabilistic effect (Lucky Card,
@@ -1136,7 +1192,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
         -- Per-card joker effects for this card
         chips, mult = eval_per_card_jokers(
           card, resolved, chips, mult, state, pareidolia,
-          cards, scoring, hand_name, poker_hands
+          cards, scoring, hand_name, poker_hands, run_individual
         )
 
         -- Hiker: permanently adds to this card's perma_bonus,
@@ -1372,7 +1428,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
 
   -- Roll back the before-pass mutations so the next combo (and any
   -- external reader of joker.ability.*) sees the original state.
-  restore_before_pass(before_snapshots)
+  if before_snapshots then restore_before_pass(before_snapshots) end
 
   -- Balatro floors the final score to an integer; mirror that so
   -- polychrome/holo chains producing fractional intermediates match.
