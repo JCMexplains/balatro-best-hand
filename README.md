@@ -40,7 +40,7 @@ The scoring pipeline mirrors Balatro's own phase order: `before` pre-pass, then 
 
 ## Fixture capture (regression harness)
 
-Fixture capture is **on by default**. Every hand you play is compared against the game's actual result; when the predicted and actual scores differ, the hand is written to `<mod>/best_hand_captures/capture_<timestamp>_<n>.lua` (inside this mod's own directory). The console always prints a live `predicted X, actual Y` line so you can spot drift as you play.
+Fixture capture is **on by default**. Every hand you play is compared against the game's actual result; when the predicted and actual scores differ, the hand is written to `<mod>/best_hand_captures/capture_<timestamp>_<n>.lua` (inside this mod's own directory). On a miss, the console prints a `predicted X, actual Y` line with how far off the prediction was — silence means the prediction matched.
 
 Each capture file is a Lua literal containing the played cards, held cards, jokers, relevant `G.GAME` state, the mod's predicted score, and the score Balatro actually computed. It is loadable with `dofile()` and replayable offline.
 
@@ -61,3 +61,7 @@ lua batch_verify.lua [path/to/captures_dir]
 ```
 lua trace_one.lua path/to/capture.lua
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
