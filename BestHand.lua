@@ -252,6 +252,25 @@ local joker_main_deny = {
   ['Misprint'] = true,
 }
 
+-------------------------------------------------------------------------
+-- context.before deny list: jokers whose before-context has side
+-- effects we can't cleanly roll back during read-only analysis.
+-- These keep their stale ability.* values; the fallback reads them.
+--
+-- Space Joker: pseudorandom roll for hand level-up.
+-- Midas Mask:  converts face cards in scoring_hand to Gold Cards.
+-- Vampire:     strips enhancements from scoring_hand cards.
+-- To Do List:  calls ease_dollars (mutates G.GAME.dollars).
+-- DNA:         copies a played card into G.playing_cards + G.deck.
+-------------------------------------------------------------------------
+local before_deny = {
+  ['Space Joker'] = true,
+  ['Midas Mask']  = true,
+  ['Vampire']     = true,
+  ['To Do List']  = true,
+  ['DNA']         = true,
+}
+
 -- Hand-type conditional jokers: fire when the played hand satisfies a
 -- containment table. op is one of "chips", "mult", or "xmult".
 local hand_conditional_jokers = {
@@ -1116,6 +1135,48 @@ local function eval_flat_jokers(resolved, chips, mult, ctx, state)
 end
 
 -------------------------------------------------------------------------
+-- context.before pre-pass. Mirrors the loop Balatro runs at
+-- state_events.lua:628 — calls each joker's calculate_joker with
+-- before=true so scaling jokers (Green Joker, Spare Trousers, Runner,
+-- Square Joker, Ride the Bus, Obelisk, and any other joker whose
+-- before-context updates self.ability.*) increment their stored
+-- counters BEFORE joker_main reads them. Without this, joker_main sees
+-- the pre-hand value and under-predicts by one increment.
+--
+-- Snapshots each mutated joker's ability so analyze_hand's enumeration
+-- doesn't corrupt game state — after each combo we restore.
+-------------------------------------------------------------------------
+local function run_before_pass(cards, scoring, hand_name, poker_hands)
+  local snapshots = {}
+  if not G.jokers or not G.jokers.cards or not poker_hands then
+    return snapshots
+  end
+  for _, joker in ipairs(G.jokers.cards) do
+    local name = joker.ability and joker.ability.name or ''
+    if not joker.debuff and joker.calculate_joker
+      and not before_deny[name]
+      and not joker_main_deny[name] then
+      snapshots[joker] = snapshot_ability(joker.ability)
+      pcall(joker.calculate_joker, joker, {
+        before       = true,
+        cardarea     = G.jokers,
+        full_hand    = cards,
+        scoring_hand = scoring,
+        scoring_name = hand_name,
+        poker_hands  = poker_hands,
+      })
+    end
+  end
+  return snapshots
+end
+
+local function restore_before_pass(snapshots)
+  for joker, ability in pairs(snapshots) do
+    joker.ability = ability
+  end
+end
+
+-------------------------------------------------------------------------
 -- Score a complete combo of played cards against the full hand.
 -- Follows Balatro's three-phase evaluation order (scoring cards,
 -- then held-in-hand, then flat jokers).
@@ -1201,6 +1262,11 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
 
   -- Determine which cards score (excludes kickers, includes Stone Cards)
   local scoring = get_scoring_cards(cards, hand_name)
+
+  -- context.before pre-pass: scaling jokers bump their ability.* here.
+  -- Must be restored before return so the next combo iteration sees
+  -- the same pre-hand state.
+  local before_snapshots = run_before_pass(cards, scoring, hand_name, poker_hands)
 
   -- Unpack per-F2 invariants. analyze_hand's combo loop builds these
   -- once and passes them in; single-shot callers get a lazy build.
@@ -1374,12 +1440,13 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- jokers, so both in-game and offline dispatch go through the same
   -- code path.
   --
-  -- Some jokers return nil on joker_main because they fire in other
-  -- contexts (individual, before, other_joker). For those — and for
-  -- Misprint, which is deny-listed to keep its pseudorandom() call
-  -- out of our read-only analysis — we fall through to eval_flat_jokers
-  -- below, which reads the joker's current ability.* accumulators
-  -- directly.
+  -- run_before_pass has already fired each joker's context.before so
+  -- scaling state is bumped; joker_main returns the updated value.
+  -- Jokers that return nil on joker_main (those firing only in
+  -- context.individual/other_joker) — and Misprint, which is
+  -- deny-listed to keep its pseudorandom() call out of our read-only
+  -- analysis — fall through to eval_flat_jokers below, which reads
+  -- ability.* accumulators directly.
   -------------------------------------------------
   local suits = count_suits(scoring)
   local ctx = {
@@ -1515,30 +1582,16 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
       end
 
       ---------------------------------------------------------
-      -- Pre-increment corrections for accumulator jokers.
-      --
-      -- Some jokers update their own ability in context.before
-      -- (which runs inside evaluate_play, BEFORE joker_main
-      -- reads the accumulated value). Our analysis runs BEFORE
-      -- evaluate_play, so we see the stale pre-increment value.
-      -- Add the delta that context.before would apply for THIS
-      -- hand. Same pattern as the existing Supernova +1 fix.
-      --
-      -- These corrections are pure arithmetic on the joker's
-      -- stored ability fields — no game functions called.
+      -- Context-specific pre-increment correction: Wee Joker
+      -- updates self.ability.extra.chips in context.individual
+      -- (per scored 2), not context.before. We don't mirror the
+      -- individual-context loop, so add the delta here. Retriggers
+      -- (Seltzer, Hack, Red Seal, etc.) on a 2 scale it per trigger.
       ---------------------------------------------------------
-      local ability = joker.ability or {}
-      -- Some Balatro jokers store ability.extra as a scalar
-      -- (e.g. a number meaning "that much mult") rather than a
-      -- table of named fields. `or {}` wouldn't catch those
-      -- because a number is truthy; we'd then index a number
-      -- and crash. Force a table when it isn't one.
-      local extra   = ability.extra
-      if type(extra) ~= 'table' then extra = {} end
       if name == 'Wee Joker' then
-        -- Grows +chip_mod per scored 2 (context.individual on id==2),
-        -- once per trigger so retriggers (Seltzer, Hack, Red Seal,
-        -- etc.) on a 2 each scale it again. Default chip_mod = 8.
+        local ability = joker.ability or {}
+        local extra = ability.extra
+        if type(extra) ~= 'table' then extra = {} end
         local twos_triggers = 0
         for idx, c in ipairs(scoring) do
           if c.base.id == 2 then
@@ -1547,50 +1600,13 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
           end
         end
         chips = chips + (extra.chip_mod or 8) * twos_triggers
-      elseif name == 'Runner' then
-        -- Gains +chip_mod chips in context.before if the played
-        -- hand contains a Straight. Default chip_mod = 15.
-        if contains_straight[hand_name] then
-          chips = chips + (extra.chip_mod or 15)
-        end
-      elseif name == 'Square Joker' then
-        -- Gains +chip_mod chips in context.before if exactly 4
-        -- cards are played. Default chip_mod = 4.
-        if #cards == 4 then
-          chips = chips + (extra.chip_mod or 4)
-        end
-      elseif name == 'Green Joker' then
-        -- Gains +1 mult per hand played in context.before.
-        mult = mult + (extra.hand_add or 1)
-      elseif name == 'Spare Trousers' then
-        -- Gains +extra.mult mult in context.before if the hand
-        -- contains a Two Pair.
-        if contains_two_pair[hand_name] then
-          mult = mult + (extra.mult or 2)
-        end
-      elseif name == 'Ride the Bus' then
-        -- context.before runs BEFORE joker_main reads
-        -- ability.mult. If no scoring card is a face,
-        -- ability.mult += extra.mult_mod (default 1); if any
-        -- face scored, ability.mult resets to 0. Both paths
-        -- above (hybrid and fallback) already added the
-        -- pre-increment value, so apply the delta here.
-        local has_face = false
-        for _, c in ipairs(scoring) do
-          local id = c.base.id
-          if pareidolia or (id >= 11 and id <= 13) then
-            has_face = true
-            break
-          end
-        end
-        if has_face then
-          mult = mult - (ability.mult or 0)
-        else
-          mult = mult + (extra.mult_mod or 1)
-        end
       end
     end
   end
+
+  -- Roll back the before-pass mutations so the next combo (and any
+  -- external reader of joker.ability.*) sees the original state.
+  restore_before_pass(before_snapshots)
 
   -- Balatro floors the final score to an integer; mirror that so
   -- polychrome/holo chains producing fractional intermediates match.

@@ -27,7 +27,7 @@ The Phase-3 scoring path calls Balatro's own `Card:calculate_joker` on each joke
 - Blueprint and Brainstorm copy resolution, including chained Blueprints
 - Held-in-hand effects: Steel Card (with editions), Baron, Shoot the Moon
 - Four Fingers, Smeared Joker, Pareidolia, Splash
-- Scaling jokers whose state lives on `ability.*` (Green Joker, Madness, Vampire, Hologram, Obelisk, Glass Joker, etc.) via a fallback that reads the stored accumulators — these fire in the game's `context.before`, not `joker_main`, so `calculate_joker(joker_main)` returns nil for them
+- Scaling jokers (Green Joker, Spare Trousers, Ride the Bus, Square Joker, Runner, Obelisk, Hologram, Madness, Glass Joker, etc.): `score_combo` runs a `context.before` pre-pass that mirrors Balatro's own, so scaling state is bumped before `joker_main` reads it. Destructive before-context side effects (DNA, Vampire, Midas Mask, To Do List, Space Joker) are skipped and read from their pre-hand `ability.*` via the fallback
 - Per-round state jokers that read from `G.GAME.current_round` (Ancient Joker, The Idol)
 - Boss blinds: The Eye and The Mouth (hand debuff → score zeroed), The Psychic (must play exactly 5 cards), The Arm (level penalty applied to base chips/mult), The Flint (base chips and mult halved)
 - **Card ordering advice**: when order matters — Hanging Chad, Photograph, Ancient Joker, Bloodstone, Triboulet, The Idol, or a card with Polychrome edition or Glass Card enhancement — F2 tries every permutation of the scoring cards and marks the best arrangement with `← drag scoring cards into this order`
