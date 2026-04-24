@@ -1088,17 +1088,12 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- Determine which cards score (excludes kickers, includes Stone Cards)
   local scoring = get_scoring_cards(cards, hand_name)
 
-  -- context.before pre-pass: scaling jokers bump their ability.* here.
-  -- Must be restored before return so the next combo iteration sees
-  -- the same pre-hand state.
-  local before_snapshots = run_before and
-    run_before_pass(cards, scoring, hand_name, poker_hands) or nil
-
   -- Unpack per-F2 invariants. analyze_hand's combo loop builds these
   -- once and passes them in; single-shot callers get a lazy build.
   -- Everything here (resolved list, Pareidolia, Hiker, Baron, Shoot
   -- the Moon, Baseball Card) depends only on the joker list, not on
   -- which scoring subset we're evaluating.
+  -- Must precede the before-pass: run_before is read below.
   precomputed = precomputed or build_combo_precomputed(resolve_jokers())
   local resolved          = precomputed.resolved
   local pareidolia        = precomputed.pareidolia
@@ -1110,6 +1105,12 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   local has_baseball_card = precomputed.has_baseball_card
   local run_before        = precomputed.run_before
   local run_individual    = precomputed.run_individual
+
+  -- context.before pre-pass: scaling jokers bump their ability.* here.
+  -- Must be restored before return so the next combo iteration sees
+  -- the same pre-hand state.
+  local before_snapshots = run_before and
+    run_before_pass(cards, scoring, hand_name, poker_hands) or nil
 
   -- Cross-card state for per-card joker effects.
   -- used_ev gets flipped true whenever a probabilistic effect (Lucky Card,
