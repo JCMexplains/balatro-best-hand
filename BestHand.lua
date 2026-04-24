@@ -1792,7 +1792,7 @@ SMODS.Keybind({
         stats and stats.perms or 0))
     end
     if not results or #results == 0 then return end
-    local lines = {'', '', '', '-- Best Hands --'}
+    local lines = {'', '', '-- Best Hands --'}
     -- Note when Splash makes all played cards score
     if G.jokers and G.jokers.cards then
       for _, joker in ipairs(G.jokers.cards) do
@@ -1849,7 +1849,6 @@ SMODS.Keybind({
     end
     -- Trailing blanks separate the F2 output from Lovely's DT logs that
     -- flood the console after every keypress.
-    lines[#lines + 1] = ''
     lines[#lines + 1] = ''
     lines[#lines + 1] = ''
     for _, line in ipairs(lines) do print(line) end
@@ -2258,32 +2257,30 @@ if G.FUNCS and G.FUNCS.evaluate_play then
             end
           end
 
-          local tag
-          if matched then
-            tag = possible
-              and ('MATCH (1 of ' .. #possible .. ' possible)')
-              or 'MATCH'
-          elseif possible then
-            local closest = possible[1]
-            for _, s in ipairs(possible) do
-              if math.abs(s - actual) < math.abs(closest - actual) then
-                closest = s
+          if not matched then
+            local tag
+            if possible then
+              local closest = possible[1]
+              for _, s in ipairs(possible) do
+                if math.abs(s - actual) < math.abs(closest - actual) then
+                  closest = s
+                end
               end
+              tag = string.format(
+                'MISS (actual not in %d possible, closest %s off by %s)',
+                #possible,
+                format_number(closest),
+                format_number(actual - closest))
+            else
+              local delta = actual - fixture.predicted_score
+              tag = '(off by ' .. format_number(delta) .. ')'
             end
-            tag = string.format(
-              'MISS (actual not in %d possible, closest %s off by %s)',
-              #possible,
-              format_number(closest),
-              format_number(actual - closest))
-          else
-            local delta = actual - fixture.predicted_score
-            tag = '(off by ' .. format_number(delta) .. ')'
+            print(string.format('[BestHand] %s: predicted %s, actual %s  %s',
+              hn,
+              format_number(fixture.predicted_score),
+              format_number(actual),
+              tag))
           end
-          print(string.format('[BestHand] %s: predicted %s, actual %s  %s',
-            hn,
-            format_number(fixture.predicted_score),
-            format_number(actual),
-            tag))
         end
 
         if fixture.predicted_score and not matched then
