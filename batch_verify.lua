@@ -328,9 +328,11 @@ local function attach_joker(t)
   t.ability.set         = t.ability.set         or 'Joker'
   t.debuff = t.debuff or false
 
-  -- Pull config.extra (and other config fields) from P_CENTERS if the
-  -- capture didn't record them. copy_scalars in BestHand drops scalar
-  -- values of ability.extra, so most captures lack this.
+  -- Pull defaults from P_CENTERS if the capture didn't record them —
+  -- mirrors Card:set_ability (card.lua:277) which copies fields from
+  -- center.config into ability. copy_scalars in BestHand's capture
+  -- code drops scalar values of ability.extra, so most captures lack
+  -- these fields.
   local key = name_to_key[t.ability.name]
   if key and G.P_CENTERS[key] then
     local cfg = G.P_CENTERS[key].config or {}
@@ -344,10 +346,20 @@ local function attach_joker(t)
         t.ability.extra = cfg.extra
       end
     end
-    -- Some centers encode base mult/chips at config level; seed them
-    -- if the capture missed them (copy_scalars drops 0).
-    if cfg.mult and t.ability.mult == 0 then t.ability.mult = cfg.mult end
-    if cfg.chips and t.ability.chips == 0 then t.ability.chips = cfg.chips end
+    -- Scalar fields that the capture's copy_scalars() drops at 0 or nil.
+    if t.ability.mult    == 0 and cfg.mult    then t.ability.mult    = cfg.mult    end
+    if t.ability.chips   == 0 and cfg.chips   then t.ability.chips   = cfg.chips   end
+    if t.ability.t_mult  == 0 and cfg.t_mult  then t.ability.t_mult  = cfg.t_mult  end
+    if t.ability.t_chips == 0 and cfg.t_chips then t.ability.t_chips = cfg.t_chips end
+    if t.ability.x_mult  == 1 and cfg.Xmult   then t.ability.x_mult  = cfg.Xmult   end
+    -- Derived fields real calculate_joker reads directly.
+    t.ability.type      = t.ability.type      or cfg.type      or ''
+    t.ability.h_mult    = t.ability.h_mult    or cfg.h_mult    or 0
+    t.ability.h_x_mult  = t.ability.h_x_mult  or cfg.h_x_mult  or 0
+    t.ability.p_dollars = t.ability.p_dollars or cfg.p_dollars or 0
+    t.ability.h_size    = t.ability.h_size    or cfg.h_size    or 0
+    t.ability.d_size    = t.ability.d_size    or cfg.d_size    or 0
+    t.ability.effect    = t.ability.effect    or G.P_CENTERS[key].effect
     -- Attach center so calculate_joker can reach rarity etc.
     t.config = t.config or {}
     t.config.center = G.P_CENTERS[key]

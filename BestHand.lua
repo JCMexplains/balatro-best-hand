@@ -180,21 +180,6 @@ local function check_hand_contains(contains_table, hand_name, cards)
   return contains_table[hand_name] or false
 end
 
--- Fibonacci-rank IDs for the Fibonacci joker (Ace = id 14 counts)
-local fib_ranks = { [2] = true, [3] = true, [5] = true, [8] = true, [14] = true }
-
--------------------------------------------------------------------------
--- Joker lookup tables (data-driven dispatch for jokers with uniform logic)
--------------------------------------------------------------------------
-
--- Per-card suit mult jokers: +3 mult per scoring card of the matching suit
-local suit_mult_jokers = {
-  ['Greedy Joker']     = 'Diamonds',
-  ['Lusty Joker']      = 'Hearts',
-  ['Wrathful Joker']   = 'Spades',
-  ['Gluttonous Joker'] = 'Clubs',
-}
-
 -------------------------------------------------------------------------
 -- Snapshot / restore a joker's ability table. Used to guarantee that
 -- calling calculate_joker during read-only analysis never corrupts
@@ -215,32 +200,6 @@ local function snapshot_ability(ability)
   end
   return copy
 end
-
--- Flat jokers that are pure accumulator reads (value lives on ability.*).
--- Used by eval_flat_jokers as a fallback path when Card:calculate_joker
--- either can't be called (Misprint deny-list) or returns nil.
-local flat_add_mult = {
-  ['Green Joker'] = true, ['Red Card'] = true, ['Popcorn'] = true,
-  ['Ceremonial Dagger'] = true, ['Ride the Bus'] = true,
-  ['Flash Card'] = true, ['Spare Trousers'] = true, ['Erosion'] = true,
-  ['Fortune Teller'] = true, ['Swashbuckler'] = true,
-}
--- Steel Joker is NOT in this table: its x_mult isn't stored on ability,
--- it's computed live from the full playing deck at scoring time.
-local flat_x_mult = {
-  ['Obelisk'] = true, ['Joker Stencil'] = true, ["Driver's License"] = true,
-  ['Glass Joker'] = true, ['Madness'] = true, ['Vampire'] = true,
-  ['Hologram'] = true, ['Throwback'] = true, ['Constellation'] = true,
-  ['Lucky Cat'] = true,
-}
-local flat_add_chips = {
-  ['Ice Cream'] = true, ['Runner'] = true, ['Castle'] = true,
-  ['Wee Joker'] = true, ['Square Joker'] = true,
-}
--- Jokers whose +mult value lives on ability.extra.mult rather than ability.mult
-local flat_add_mult_extra = {
-  ['Gros Michel'] = true,
-}
 
 -------------------------------------------------------------------------
 -- Hybrid scoring deny list: jokers whose real calculate_joker must NOT
@@ -271,24 +230,30 @@ local before_deny = {
   ['DNA']         = true,
 }
 
--- Hand-type conditional jokers: fire when the played hand satisfies a
--- containment table. op is one of "chips", "mult", or "xmult".
-local hand_conditional_jokers = {
-  ['Jolly Joker']   = { contains = contains_pair,     op = 'mult',  amount = 8 },
-  ['Zany Joker']    = { contains = contains_three,    op = 'mult',  amount = 12 },
-  ['Mad Joker']     = { contains = contains_two_pair, op = 'mult',  amount = 10 },
-  ['Crazy Joker']   = { contains = contains_straight, op = 'mult',  amount = 12 },
-  ['Droll Joker']   = { contains = contains_flush,    op = 'mult',  amount = 10 },
-  ['Sly Joker']     = { contains = contains_pair,     op = 'chips', amount = 50 },
-  ['Wily Joker']    = { contains = contains_three,    op = 'chips', amount = 100 },
-  ['Clever Joker']  = { contains = contains_two_pair, op = 'chips', amount = 80 },
-  ['Devious Joker'] = { contains = contains_straight, op = 'chips', amount = 100 },
-  ['Crafty Joker']  = { contains = contains_flush,    op = 'chips', amount = 80 },
-  ['The Duo']       = { contains = contains_pair,     op = 'xmult', amount = 2 },
-  ['The Trio']      = { contains = contains_three,    op = 'xmult', amount = 3 },
-  ['The Family']    = { contains = contains_four,     op = 'xmult', amount = 4 },
-  ['The Order']     = { contains = contains_straight, op = 'xmult', amount = 3 },
-  ['The Tribe']     = { contains = contains_flush,    op = 'xmult', amount = 2 },
+-------------------------------------------------------------------------
+-- context.individual deny list: jokers whose per-card dispatch either
+-- calls pseudorandom (breaking EV estimation) or mutates state we
+-- can't cleanly roll back (G.GAME.dollar_buffer, other_card ability).
+-- These fall through to hardcoded branches in eval_per_card_jokers.
+--
+-- Bloodstone / Business Card / 8 Ball: pseudorandom; Bloodstone still
+--   computes EV in the fallback, the other two are ignored.
+-- Golden Ticket / Rough Gem: mutate G.GAME.dollar_buffer.
+-- Hiker:     mutates other_card.ability.perma_bonus on each trigger;
+--            Phase 1's hiker_accum already handles the chip delta.
+-- Lucky Cat: fires only when other_card.lucky_trigger is set, which
+--            requires firing the real Lucky Card enhancement path.
+-- Wee Joker: self-mutation; handled via a Phase-3 correction.
+-------------------------------------------------------------------------
+local per_card_deny = {
+  ['Bloodstone']    = true,
+  ['Business Card'] = true,
+  ['8 Ball']        = true,
+  ['Golden Ticket'] = true,
+  ['Rough Gem']     = true,
+  ['Hiker']         = true,
+  ['Lucky Cat']     = true,
+  ['Wee Joker']     = true,
 }
 
 -------------------------------------------------------------------------
@@ -827,138 +792,73 @@ end
 -------------------------------------------------------------------------
 -- Phase 1 helper: per-card joker effects for a single scoring card.
 -- Called once per trigger (base + retriggers), in joker slot order.
--- These jokers give bonuses based on the individual card's rank/suit.
 --
--- `state` carries cross-card flags:
---   state.photo_card — identity of the first scored face card to fire
---                      Photograph. Every trigger of THAT card re-fires
---                      Photograph (Hanging Chad stacks stack x2s), but
---                      later face cards are blocked.
---   state.used_ev    — set true when a probabilistic effect (Lucky
---                      Card, Bloodstone) contributes; surfaces in F2
---                      as an "(expected value)" marker.
--- `pareidolia` makes every card count as a face card for Scary Face,
--- Smiley Face, and Photograph.
+-- Primary path: real Card:calculate_joker with context.individual and
+-- context.other_card = card. Mirrors the loop at state_events.lua:693.
+-- Handles deterministic jokers (suit-mult, rank-mult, face-detection,
+-- Photograph, Triboulet, Ancient Joker, The Idol, Arrowhead, Onyx
+-- Agate, etc.) and Blueprint/Brainstorm delegation natively.
+--
+-- Fallback: jokers in per_card_deny (probabilistic or side-effectful)
+-- use hardcoded logic below. Bloodstone computes EV / consumes the
+-- next prob_config slot; the others are ignored because their effect
+-- is dollars, not score.
+--
+-- `state` carries:
+--   state.used_ev    — set when a probabilistic effect contributes.
+--   state.prob_idx / state.prob_config — see score_combo.
 -------------------------------------------------------------------------
-local function eval_per_card_jokers(card, resolved, chips, mult, state, pareidolia)
-  local id = card.base.id
-  -- Pareidolia makes every card count as a face card for joker effects
-  local is_face = pareidolia or (id >= 11 and id <= 13)
-  local is_ace = id == 14
-  local is_fib = fib_ranks[id] or false
-  local is_even = id >= 2 and id <= 10 and id % 2 == 0
-  local is_odd = is_ace or (id >= 1 and id <= 10 and id % 2 == 1)
+local function eval_per_card_jokers(
+  card, resolved, chips, mult, state, pareidolia,
+  cards, scoring, hand_name, poker_hands
+)
+  local jokers = G.jokers and G.jokers.cards or {}
 
-  for _, j in ipairs(resolved) do
-    local name = j.name
+  for idx, joker in ipairs(jokers) do
+    if not joker.debuff and joker.ability then
+      local name = joker.ability.name or ''
+      local effect = nil
 
-    -- Suit mult jokers (Greedy/Lusty/Wrathful/Gluttonous):
-    -- +3 mult per scoring card of the matching suit
-    local suit_target = suit_mult_jokers[name]
-    if suit_target then
-      if suit_matches(card, suit_target) then mult = mult + 3 end
-
-    -- Fibonacci: +8 mult for ranks 2, 3, 5, 8, Ace
-    elseif name == 'Fibonacci' then
-      if is_fib then mult = mult + 8 end
-
-    -- Scary Face: +30 chips per face card (J, Q, K)
-    elseif name == 'Scary Face' then
-      if is_face then chips = chips + 30 end
-
-    -- Scholar: +20 chips and +4 mult per Ace
-    elseif name == 'Scholar' then
-      if is_ace then
-        chips = chips + 20
-        mult = mult + 4
+      if joker.calculate_joker
+        and not per_card_deny[name]
+        and not joker_main_deny[name]
+        and poker_hands then
+        local saved = snapshot_ability(joker.ability)
+        effect = joker:calculate_joker({
+          individual   = true,
+          cardarea     = G.play,
+          other_card   = card,
+          full_hand    = cards,
+          scoring_hand = scoring,
+          scoring_name = hand_name,
+          poker_hands  = poker_hands,
+        })
+        joker.ability = saved
       end
 
-    -- Even Steven: +4 mult per even-ranked card (2, 4, 6, 8, 10)
-    elseif name == 'Even Steven' then
-      if is_even then mult = mult + 4 end
-
-    -- Odd Todd: +31 chips per odd-ranked card (A, 3, 5, 7, 9)
-    elseif name == 'Odd Todd' then
-      if is_odd then chips = chips + 31 end
-
-    -- Walkie Talkie: +10 chips and +4 mult per 10 or 4
-    elseif name == 'Walkie Talkie' then
-      if id == 10 or id == 4 then
-        chips = chips + 10
-        mult = mult + 4
-      end
-
-    -- Smiley Face: +5 mult per face card
-    elseif name == 'Smiley Face' then
-      if is_face then mult = mult + 5 end
-
-    -- Photograph: x2 mult on the first scoring face card. Balatro's
-    -- condition has no once-per-hand flag, so every trigger of that
-    -- card re-fires Photograph — e.g. Hanging Chad retriggers of the
-    -- leftmost face card stack into x2 × x2 × x2. Track the card
-    -- identity, not a boolean, so later face cards are still blocked
-    -- but retriggers of the original one continue to fire.
-    elseif name == 'Photograph' then
-      if is_face and (state.photo_card == nil
-        or state.photo_card == card) then
-        state.photo_card = card
-        mult = mult * 2
-      end
-
-    -- Triboulet: x2 mult per King or Queen scored
-    elseif name == 'Triboulet' then
-      if id == 12 or id == 13 then mult = mult * 2 end
-
-    -- Bloodstone: 1-in-2 chance of x1.5 mult per scored Heart.
-    -- EV mode (prob_config nil): x1.25 per Heart (= 0.5*1.5 + 0.5*1.0).
-    -- Exact mode: consume the next prob_config slot — true = hit (x1.5),
-    -- false/nil = miss (x1.0). Always increment prob_idx so F4 can
-    -- enumerate every outcome.
-    elseif name == 'Bloodstone' then
-      if suit_matches(card, 'Hearts') then
-        state.prob_idx = state.prob_idx + 1
-        if state.prob_config then
-          if state.prob_config[state.prob_idx] then
-            mult = mult * 1.5
+      if effect then
+        chips = chips + (effect.chips or 0)
+        mult  = mult  + (effect.mult or 0)
+        if effect.x_mult then mult = mult * effect.x_mult end
+      else
+        -- Hardcoded fallback: only Bloodstone contributes here. Other
+        -- deny-listed jokers (8 Ball, Business Card, Golden Ticket,
+        -- Rough Gem, Hiker, Lucky Cat, Wee Joker) either have their
+        -- contribution handled elsewhere or don't affect score in EV.
+        local target = resolve_copy_target(jokers, idx, {}) or joker.ability
+        if target.name == 'Bloodstone' then
+          if suit_matches(card, 'Hearts') then
+            state.prob_idx = state.prob_idx + 1
+            if state.prob_config then
+              if state.prob_config[state.prob_idx] then
+                mult = mult * 1.5
+              end
+            else
+              mult = mult * 1.25
+              state.used_ev = true
+            end
           end
-        else
-          mult = mult * 1.25
-          state.used_ev = true
         end
-      end
-
-    -- Arrowhead: +50 chips per Spade scored
-    elseif name == 'Arrowhead' then
-      if suit_matches(card, 'Spades') then chips = chips + 50 end
-
-    -- Onyx Agate: +7 mult per Club scored
-    elseif name == 'Onyx Agate' then
-      if suit_matches(card, 'Clubs') then mult = mult + 7 end
-
-    -- Ancient Joker: x1.5 per card matching the joker's chosen suit.
-    -- The chosen suit rotates each round and is stored on
-    -- G.GAME.current_round.ancient_card.suit, not on the joker.
-    elseif name == 'Ancient Joker' then
-      local ac = G.GAME.current_round and G.GAME.current_round.ancient_card
-      local chosen = ac and ac.suit
-      if chosen and suit_matches(card, chosen) then
-        mult = mult * 1.5
-      end
-
-    -- Hiker: permanently adds +5 to the card's perma_bonus each
-    -- trigger. No immediate chip bonus — the chips come from
-    -- perma_bonus being read on subsequent triggers.  The
-    -- accumulation is handled in score_combo's Phase 1 loop.
-
-    -- The Idol: x2 per card matching a specific rank AND suit.
-    -- Target rotates each round and is stored on
-    -- G.GAME.current_round.idol_card.{id, suit}.
-    elseif name == 'The Idol' then
-      local ic = G.GAME.current_round and G.GAME.current_round.idol_card
-      local tid = ic and ic.id
-      local tsuit = ic and ic.suit
-      if tid and tsuit and id == tid and suit_matches(card, tsuit) then
-        mult = mult * 2
       end
     end
   end
@@ -967,47 +867,19 @@ local function eval_per_card_jokers(card, resolved, chips, mult, state, pareidol
 end
 
 -------------------------------------------------------------------------
--- Phase-3 fallback for jokers whose real calculate_joker either can't
--- be called (deny list) or returned nil. Reimplements the common
--- accumulator / hand-type / state-reading jokers, plus Misprint's
--- range enumeration (real calculate_joker calls pseudorandom()).
+-- Phase-3 fallback for Misprint. Every other joker runs through real
+-- Card:calculate_joker in the hybrid path; Misprint is deny-listed
+-- because its real calculate_joker calls pseudorandom() to roll a
+-- random mult in [min, max], which we enumerate via state.range_config
+-- instead (batch_verify iterates every integer in the range).
 --
--- state.range_events is an array of {lo, hi} bounds, one per Misprint
--- fire this hand, so batch_verify can enumerate every integer value.
+-- The caller wraps this in edition_additive/multiplicative so we only
+-- contribute the joker's own mult_mod here.
 -------------------------------------------------------------------------
 local function eval_flat_jokers(resolved, chips, mult, ctx, state)
   for _, j in ipairs(resolved) do
-    local ability = j.ability
-    local name = j.name
-
-    chips, mult = edition_additive(j.edition, chips, mult)
-
-    if flat_add_mult[name] then
-      mult = mult + (ability.mult or 0)
-
-    elseif flat_x_mult[name] then
-      mult = mult * (ability.x_mult or 1)
-
-    elseif flat_add_chips[name] then
-      chips = chips + (ability.extra and ability.extra.chips
-        or ability.chips or 0)
-
-    elseif flat_add_mult_extra[name] then
-      mult = mult + ((ability.extra and ability.extra.mult) or 0)
-
-    elseif hand_conditional_jokers[name] then
-      local hc = hand_conditional_jokers[name]
-      if check_hand_contains(hc.contains, ctx.hand_name, ctx.full_hand) then
-        if hc.op == 'mult' then
-          mult = mult + hc.amount
-        elseif hc.op == 'chips' then
-          chips = chips + hc.amount
-        else
-          mult = mult * hc.amount
-        end
-      end
-
-    elseif name == 'Misprint' then
+    if j.name == 'Misprint' then
+      local ability = j.ability
       local lo = (ability.extra and ability.extra.min) or 0
       local hi = (ability.extra and ability.extra.max) or 23
       state.range_idx = state.range_idx + 1
@@ -1020,117 +892,8 @@ local function eval_flat_jokers(resolved, chips, mult, ctx, state)
         mult = mult + (lo + hi) / 2
         state.used_ev = true
       end
-
-    elseif name == 'Joker' then
-      mult = mult + 4
-
-    elseif name == 'Half Joker' then
-      if ctx.num_played <= 3 then mult = mult + 20 end
-
-    elseif name == 'Banner' then
-      local discards = (G.GAME.current_round
-        and G.GAME.current_round.discards_left) or 0
-      chips = chips + 30 * discards
-
-    elseif name == 'Mystic Summit' then
-      local discards = (G.GAME.current_round
-        and G.GAME.current_round.discards_left) or 0
-      if discards == 0 then mult = mult + 15 end
-
-    elseif name == 'Abstract Joker' then
-      mult = mult + 3 * #G.jokers.cards
-
-    elseif name == 'Stuntman' then
-      chips = chips + 250
-
-    elseif name == 'Supernova' then
-      local times = (G.GAME.hands[ctx.hand_name]
-        and G.GAME.hands[ctx.hand_name].played) or 0
-      mult = mult + times + 1
-
-    elseif name == 'Acrobat' then
-      local hands = (G.GAME.current_round
-        and G.GAME.current_round.hands_left) or 0
-      if hands == 0 then mult = mult * 3 end
-
-    elseif name == 'Bootstraps' then
-      local dollars = (G.GAME.dollars or 0) + (ctx.scoring_dollars or 0)
-      mult = mult + 2 * math.floor(dollars / 5)
-
-    elseif name == 'Blackboard' then
-      local all_dark = true
-      for _, c in ipairs(ctx.all_cards) do
-        if not ctx.played[c] and not c.debuff then
-          if c.base.suit ~= 'Spades' and c.base.suit ~= 'Clubs' then
-            all_dark = false
-            break
-          end
-        end
-      end
-      if all_dark then mult = mult * 3 end
-
-    elseif name == 'Raised Fist' then
-      -- +2× the nominal of the lowest held card. If that card is
-      -- debuffed (e.g. under The Window) the joker contributes 0:
-      -- Balatro picks the lowest first, then checks debuff — it
-      -- does NOT fall through to the next-lowest.
-      local lowest, lowest_debuffed = math.huge, false
-      for _, c in ipairs(ctx.all_cards) do
-        if not ctx.played[c] then
-          local nom = c.base.nominal or c.base.id
-          if nom < lowest then
-            lowest = nom
-            lowest_debuffed = c.debuff or false
-          end
-        end
-      end
-      if lowest < math.huge and not lowest_debuffed then
-        mult = mult + 2 * lowest
-      end
-
-    elseif name == 'Blue Joker' then
-      local remaining = (G.deck and G.deck.cards
-        and #G.deck.cards) or 0
-      chips = chips + 2 * remaining
-
-    elseif name == 'Flower Pot' then
-      local s = ctx.suits
-      if s.Hearts > 0 and s.Diamonds > 0
-        and s.Clubs > 0 and s.Spades > 0 then
-        mult = mult * (ability.x_mult or 3)
-      end
-
-    elseif name == 'Loyalty Card' then
-      if ability.remaining == 0 then
-        mult = mult * (ability.x_mult or 4)
-      end
-
-    elseif name == 'Card Sharp' then
-      local h = G.GAME.hands[ctx.hand_name]
-      if h and (h.played_this_round or 0) > 0 then
-        mult = mult * (ability.extra and ability.extra.Xmult or 3)
-      end
-
-    elseif name == 'Steel Joker' then
-      -- Computed live from the full playing deck; ability.x_mult
-      -- on the joker is base (1) and never updates.
-      local count = 0
-      if G.playing_cards then
-        for _, c in ipairs(G.playing_cards) do
-          if c.ability and c.ability.name == 'Steel Card' then
-            count = count + 1
-          end
-        end
-      end
-      local per_steel = (type(ability.extra) == 'table' and ability.extra.x_mult_mod)
-        or (type(ability.extra) == 'number' and ability.extra)
-        or 0.2
-      mult = mult * (1 + per_steel * count)
     end
-
-    chips, mult = edition_multiplicative(j.edition, chips, mult)
   end
-
   return chips, mult
 end
 
@@ -1363,7 +1126,8 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
 
         -- Per-card joker effects for this card
         chips, mult = eval_per_card_jokers(
-          card, resolved, chips, mult, state, pareidolia
+          card, resolved, chips, mult, state, pareidolia,
+          cards, scoring, hand_name, poker_hands
         )
 
         -- Hiker: permanently adds to this card's perma_bonus,
@@ -1526,42 +1290,35 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
         end
       end
 
+      -------------------------------------------------------
+      -- Joker edition applies regardless of whether joker_main
+      -- fires. Balatro evaluates edition and joker_main as
+      -- independent eval_card calls (state_events.lua:880/905),
+      -- so foil/holo still score even when the joker's
+      -- joker_main returns nil (e.g. Baron, which fires only in
+      -- the held-in-hand individual context).
+      --
+      -- Composition: holo (+10 mult) / foil (+50 chips) join the
+      -- joker's additive pool BEFORE its Xmult step so e.g. Steel
+      -- Joker ×11.4 with holo scores (m+10)×11.4, not m×11.4+10.
+      -- Polychrome ×1.5 stacks AFTER the joker's Xmult.
+      -------------------------------------------------------
+      chips, mult = edition_additive(joker.edition, chips, mult)
       if effect then
-        -------------------------------------------------------
-        -- Apply the returned effect table to our running
-        -- chips/mult accumulators. The keys mirror what SMODS
-        -- trigger_effects reads — we just do it manually
-        -- without the animation/event side effects.
-        --
-        -- chip_mod  → additive chips  (e.g. Banner +30×discards)
-        -- mult_mod  → additive mult   (e.g. Jolly Joker +8)
-        -- Xmult_mod → multiplicative  (e.g. The Tribe ×2)
-        --
-        -- Edition composition: holo (+10 mult) and foil (+50 chips)
-        -- join the joker's additive pool BEFORE the Xmult step, so
-        -- e.g. Steel Joker ×11.4 with holo scores (m+10)×11.4, not
-        -- m×11.4+10. Polychrome ×1.5 stacks with the joker's Xmult.
-        -------------------------------------------------------
-        chips, mult = edition_additive(joker.edition, chips, mult)
         chips = chips + (effect.chip_mod or 0)
         mult  = mult  + (effect.mult_mod or 0)
         if effect.Xmult_mod then mult = mult * effect.Xmult_mod end
-        chips, mult = edition_multiplicative(joker.edition, chips, mult)
       else
-        -------------------------------------------------------
-        -- Fallback: deny-listed or calculate_joker returned nil.
-        -- eval_flat_jokers reads the joker's ability.* accumulators
-        -- directly — needed for scaling jokers (Green Joker, Madness,
-        -- Vampire, etc.) whose joker_main returns nil because their
-        -- state is updated in context.before, not joker_main.
-        -- Pass only the matching resolved entry (a 1-element list)
-        -- so it handles Blueprint resolution + edition.
-        -------------------------------------------------------
+        -- Fallback for deny-listed / joker_main-nil jokers.
+        -- eval_flat_jokers handles Misprint's range enumeration;
+        -- everything else falls through as a no-op (the joker
+        -- either doesn't score this phase or contributed nil).
         local r = resolved[resolved_idx]
         if r then
           chips, mult = eval_flat_jokers({r}, chips, mult, ctx, state)
         end
       end
+      chips, mult = edition_multiplicative(joker.edition, chips, mult)
 
       ---------------------------------------------------------
       -- Baseball Card: x1.5 mult for each uncommon joker.

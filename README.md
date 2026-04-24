@@ -19,24 +19,24 @@ Copy this folder into your Balatro mods directory:
 
 ## What it handles
 
-The Phase-3 scoring path calls Balatro's own `Card:calculate_joker` on each joker — so any joker the game ships scores with its real logic, not a reimplementation. Dedicated handling exists for:
+Scoring dispatch goes through Balatro's own `Card:calculate_joker` on every joker, in every phase (`context.before`, `context.individual`, `context.joker_main`). Any joker the game ships scores with its real logic — no per-joker reimplementation in this mod. Explicit handling layers on top for:
 
 - Every card enhancement (Bonus, Mult, Glass, Steel, Stone, Lucky, Gold, Wild)
-- Foil / Holo / Polychrome editions on cards and jokers
+- Foil / Holo / Polychrome editions on cards and jokers (with Balatro's exact composition order: additive before the joker's Xmult, polychrome after)
 - Retrigger jokers: Red Seal, Mime, Hack, Sock and Buskin, Hanging Chad, Dusk, Seltzer
 - Blueprint and Brainstorm copy resolution, including chained Blueprints
 - Held-in-hand effects: Steel Card (with editions), Baron, Shoot the Moon
 - Four Fingers, Smeared Joker, Pareidolia, Splash
-- Scaling jokers (Green Joker, Spare Trousers, Ride the Bus, Square Joker, Runner, Obelisk, Hologram, Madness, Glass Joker, etc.): `score_combo` runs a `context.before` pre-pass that mirrors Balatro's own, so scaling state is bumped before `joker_main` reads it. Destructive before-context side effects (DNA, Vampire, Midas Mask, To Do List, Space Joker) are skipped and read from their pre-hand `ability.*` via the fallback
+- `context.before` pre-pass mirrors Balatro's own (state_events.lua:628): scaling jokers (Green Joker, Spare Trousers, Ride the Bus, Square Joker, Runner, Obelisk, Hologram, Madness, Glass Joker, etc.) get their `ability.*` bumped before `joker_main` reads. Destructive before-context side effects (DNA, Vampire, Midas Mask, To Do List, Space Joker) are skipped
 - Per-round state jokers that read from `G.GAME.current_round` (Ancient Joker, The Idol)
 - Boss blinds: The Eye and The Mouth (hand debuff → score zeroed), The Psychic (must play exactly 5 cards), The Arm (level penalty applied to base chips/mult), The Flint (base chips and mult halved)
 - **Card ordering advice**: when order matters — Hanging Chad, Photograph, Ancient Joker, Bloodstone, Triboulet, The Idol, or a card with Polychrome edition or Glass Card enhancement — F2 tries every permutation of the scoring cards and marks the best arrangement with `← drag scoring cards into this order`
 
-The scoring pipeline mirrors Balatro's own phase order: per-card effects first (left to right, with retriggers), then held-in-hand effects, then flat joker effects.
+The scoring pipeline mirrors Balatro's own phase order: `before` pre-pass, then per-card effects (left to right, with retriggers), then held-in-hand effects, then flat joker effects with their edition bonuses.
 
 ## Known limitations
 
-- **Probabilistic effects** (Lucky Card, Bloodstone) use expected value — your actual score will vary by random number generation. Hands where these contributed are tagged `(expected value)` in the F2 output.
+- **Probabilistic effects** (Lucky Card, Bloodstone) use expected value in the primary prediction. Bloodstone's real `calculate_joker` calls `pseudorandom()` directly, so it's fallback-handled in EV mode (×1.25 per Heart instead of ×1.5). F4 captures still enumerate all probabilistic outcomes to find the actual one. Hands where EV contributed are tagged `(expected value)` in the F2 output.
 - **Most boss blinds are not modeled.** The five listed above are handled; others (Verdant Leaf, The Needle, The Wall, etc.) are not — the mod will recommend hands as if there were no blind in effect.
 
 ## Fixture capture (regression harness)
@@ -57,7 +57,7 @@ Both tools run from the mod directory with the Lua 5.1 interpreter and require `
 lua batch_verify.lua [path/to/captures_dir]
 ```
 
-**`trace_one.lua`** — load a single capture and replay it with a full phase-by-phase trace (per-card, held-in-hand, flat jokers). Use this to investigate a specific miss.
+**`trace_one.lua`** — load a single capture, print inputs (played / held / jokers with editions), replay through `score_combo`, and report whether the prediction matches the actual. Use this to investigate a specific miss.
 
 ```
 lua trace_one.lua path/to/capture.lua
