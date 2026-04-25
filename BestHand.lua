@@ -1702,10 +1702,32 @@ local function needs_ordering(flags, scoring)
 end
 
 -------------------------------------------------------------------------
+-- Suppress floating UI messages while score_combo dispatches through
+-- real Card:calculate_joker. Steamodded's scaling.toml lovely patch
+-- replaces direct ability mutations in scaling jokers (Green Joker,
+-- Square Joker, Spare Trousers, Hologram, Runner, Obelisk, Ride the
+-- Bus, Vampire, ...) with SMODS.scale_card, which queues a floating
+-- "Upgrade!" message via SMODS.calculate_effect — gated on
+-- SMODS.no_resolve at smods/src/utils.lua:1334 (text) and :1515
+-- (juice). Without this, F2's ~218 combos × ~5 jokers flood the UI
+-- with Upgrade messages even though snapshot_ability rolls back the
+-- numeric mutation. Synchronous SMODS.scale_card still applies the
+-- ability bump in-place, so the score is unaffected.
+local function with_no_resolve(fn, ...)
+  if not SMODS then return fn(...) end
+  local prev = SMODS.no_resolve
+  SMODS.no_resolve = true
+  local results = { pcall(fn, ...) }
+  SMODS.no_resolve = prev
+  if not results[1] then error(results[2], 0) end
+  return unpack(results, 2)
+end
+
+-------------------------------------------------------------------------
 -- Analyze the current hand: try every possible combo (sizes 5→1),
 -- score each one, and return the top 3 distinct hand types.
 -------------------------------------------------------------------------
-local function analyze_hand()
+local function analyze_hand_inner()
   if not G or not G.hand or not G.hand.cards then return nil end
   local cards = G.hand.cards
   if #cards == 0 then return nil end
@@ -1821,6 +1843,10 @@ local function analyze_hand()
     end
   end
   return top, { combos = combo_n, perm_branches = perm_branches, perms = perm_n }
+end
+
+local function analyze_hand(...)
+  return with_no_resolve(analyze_hand_inner, ...)
 end
 
 -------------------------------------------------------------------------
@@ -2189,7 +2215,8 @@ local function compute_predicted_score(played, held, prob_config, range_config)
   local all = {}
   for _, c in ipairs(played) do all[#all + 1] = c end
   for _, c in ipairs(held)   do all[#all + 1] = c end
-  return score_combo(played, all, prob_config, range_config)
+  return with_no_resolve(
+    score_combo, played, all, prob_config, range_config)
 end
 
 local function write_capture(fixture)
