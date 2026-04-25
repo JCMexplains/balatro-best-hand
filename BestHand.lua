@@ -1706,19 +1706,29 @@ end
 -- real Card:calculate_joker. Steamodded's scaling.toml lovely patch
 -- replaces direct ability mutations in scaling jokers (Green Joker,
 -- Square Joker, Spare Trousers, Hologram, Runner, Obelisk, Ride the
--- Bus, Vampire, ...) with SMODS.scale_card, which queues a floating
--- "Upgrade!" message via SMODS.calculate_effect — gated on
--- SMODS.no_resolve at smods/src/utils.lua:1334 (text) and :1515
--- (juice). Without this, F2's ~218 combos × ~5 jokers flood the UI
--- with Upgrade messages even though snapshot_ability rolls back the
--- numeric mutation. Synchronous SMODS.scale_card still applies the
--- ability bump in-place, so the score is unaffected.
+-- Bus, Vampire, ...) with SMODS.scale_card, which displays a floating
+-- "Upgrade!" message. Without suppression, F2's ~218 combos × ~5
+-- jokers flood the UI with Upgrade messages even though
+-- snapshot_ability rolls back the numeric mutation.
+--
+-- Belt-and-suspenders: set SMODS.no_resolve (gates messages at
+-- smods/src/utils.lua:1334 and juice at :1515) AND stub
+-- card_eval_status_text directly, since some code paths call it
+-- without going through SMODS.calculate_effect. The synchronous
+-- ability bump still applies in-place, so the score is unaffected.
 local function with_no_resolve(fn, ...)
-  if not SMODS then return fn(...) end
-  local prev = SMODS.no_resolve
-  SMODS.no_resolve = true
+  local prev_resolve, real_status_text
+  if SMODS then
+    prev_resolve = SMODS.no_resolve
+    SMODS.no_resolve = true
+  end
+  if _G and _G.card_eval_status_text then
+    real_status_text = _G.card_eval_status_text
+    _G.card_eval_status_text = function() end
+  end
   local results = { pcall(fn, ...) }
-  SMODS.no_resolve = prev
+  if SMODS then SMODS.no_resolve = prev_resolve end
+  if real_status_text then _G.card_eval_status_text = real_status_text end
   if not results[1] then error(results[2], 0) end
   return unpack(results, 2)
 end
