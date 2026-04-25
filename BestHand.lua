@@ -311,7 +311,7 @@ local per_card_deny = {
 -- Dusk, Seltzer, Mime), per-card individual-only (Photograph,
 -- Triboulet, Idol, Ancient, Scary/Smiley Face, Walkie Talkie,
 -- Fibonacci, Even Steven, Odd Todd, Scholar, Onyx Agate, Arrowhead,
--- Greedy/Lusty/Wrathful/Gluttonous, Hiker, Lucky Cat, Rough Gem,
+-- Greedy/Lusty/Wrathful/Gluttonous, Hiker, Rough Gem,
 -- Bloodstone, 8 Ball, Golden Ticket, Business Card), held-only
 -- (Baron, Shoot the Moon, Reserved Parking, Raised Fist), and
 -- before/discard-only (DNA, Vampire, Midas Mask, Space Joker,
@@ -326,6 +326,12 @@ local per_card_deny = {
 -- fires, but pcalling them still walks the entire if-elseif chain.
 -- Skipping ~6 of 7 pcalls per combo on common loadouts × 218 combos
 -- per F2 saves ~1,300 wasted pcalls.
+--
+-- NOTE: Lucky Cat is intentionally NOT in this set. Its `ability.x_mult`
+-- starts at 1 but grows by extra=0.25 each time a Lucky card triggers,
+-- and the catch-all `x_mult > 1` branch in joker_main returns the
+-- accumulated value. Excluding it dropped a flat ×x_mult from every
+-- prediction once Lucky Cat had triggered at least once.
 -------------------------------------------------------------------------
 local joker_main_no_fire = {
   -- Passive
@@ -346,7 +352,7 @@ local joker_main_no_fire = {
   ['Arrowhead']  = true, ['Greedy Joker']   = true,
   ['Lusty Joker'] = true, ['Wrathful Joker'] = true,
   ['Gluttonous Joker'] = true,
-  ['Hiker']      = true, ['Lucky Cat']      = true,
+  ['Hiker']      = true,
   ['Rough Gem']  = true, ['Bloodstone']     = true,
   ['8 Ball']     = true, ['Golden Ticket']  = true,
   ['Business Card'] = true,
