@@ -1502,6 +1502,32 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
     range_events = {},
   }
 
+  -- Lucky Cat snapshot: each Lucky-card trigger (vanilla card.lua:3076)
+  -- mutates self.ability.x_mult on the actual Lucky Cat. The catch-all
+  -- in joker_main (card.lua:3653) then returns Xmult_mod = x_mult, so
+  -- the bump applied during Phase 1 must be visible to Phase 3. We
+  -- mutate the live ability table for that visibility and restore it
+  -- below before returning so the next combo (and the next F2 call)
+  -- sees the original state. Ignores Blueprint/Brainstorm copies on
+  -- purpose — vanilla guards the bump with `not context.blueprint`,
+  -- and resolved entries share the underlying Lucky Cat ability table
+  -- so a single bump propagates to every copy automatically.
+  local lucky_cats = nil
+  if G.jokers and G.jokers.cards then
+    for _, j in ipairs(G.jokers.cards) do
+      if j.ability and j.ability.name == 'Lucky Cat' and not j.debuff then
+        lucky_cats = lucky_cats or {}
+        local extra = j.ability.extra
+        if type(extra) ~= 'number' then extra = 0.25 end
+        lucky_cats[#lucky_cats + 1] = {
+          joker = j,
+          original_x_mult = j.ability.x_mult,
+          extra = extra,
+        }
+      end
+    end
+  end
+
   -------------------------------------------------
   -- Phase 1: each scoring card fires L→R
   -- Each trigger applies in order:
@@ -1565,13 +1591,41 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
             -- 1/5 chance of +20 mult. EV mode: +4 average.
             -- Exact mode: consume the next prob_config slot.
             state.prob_idx = state.prob_idx + 1
+            local mult_triggered = nil  -- nil = EV partial, true/false = exact
             if state.prob_config then
               if state.prob_config[state.prob_idx] then
                 mult = mult + 20
+                mult_triggered = true
+              else
+                mult_triggered = false
               end
             else
               mult = mult + 4
               state.used_ev = true
+            end
+            -- Lucky Cat bump (vanilla card.lua:3076 sets self.ability.
+            -- x_mult += self.ability.extra when other_card.lucky_trigger
+            -- is set, which fires whenever the mult event triggers).
+            -- Phase 3's joker_main catch-all (card.lua:3653) returns
+            -- the bumped value; restore happens at the bottom of
+            -- score_combo. We approximate the dollars-only path
+            -- (1/15 independent roll that also sets lucky_trigger) by
+            -- ignoring it — the mod's prob_config enumerates only
+            -- the mult roll, and the dollars roll can't move the
+            -- score except via Lucky Cat. Captures where the dollars
+            -- event alone bumps Lucky Cat will still miss.
+            if lucky_cats then
+              for _, lc in ipairs(lucky_cats) do
+                if mult_triggered == true then
+                  lc.joker.ability.x_mult = lc.joker.ability.x_mult + lc.extra
+                elseif mult_triggered == nil then
+                  -- EV mode: linear approximation matching the +4
+                  -- mult averaging (1/5 × extra). Drift compounds
+                  -- multiplicatively across multiple Lucky cards but
+                  -- matches the existing EV pattern for the +20 mult.
+                  lc.joker.ability.x_mult = lc.joker.ability.x_mult + lc.extra * 0.2
+                end
+              end
             end
           end
           -- Permanent bonus chips (from hand-scored upgrades).
@@ -1954,6 +2008,13 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- Roll back the before-pass mutations so the next combo (and any
   -- external reader of joker.ability.*) sees the original state.
   if before_snapshots then restore_before_pass(before_snapshots) end
+
+  -- Roll back Lucky Cat bumps applied during Phase 1's per-card loop.
+  if lucky_cats then
+    for _, lc in ipairs(lucky_cats) do
+      lc.joker.ability.x_mult = lc.original_x_mult
+    end
+  end
 
   -- Balatro floors the final score to an integer; mirror that so
   -- polychrome/holo chains producing fractional intermediates match.
