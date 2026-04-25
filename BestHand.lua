@@ -314,14 +314,28 @@ local smeared_pair = {
   Spades = 'Clubs',    Clubs = 'Spades',
 }
 
+-- Per-F2 cache for has_smeared_joker. suit_matches calls it inside
+-- count_suits and get_flush_members — both of which are called O(combos)
+-- times during analyze_hand. Without this, every combo re-scans
+-- G.jokers.cards 4× per scoring card. Cleared by with_no_resolve at the
+-- top and bottom of each F2 / per-play prediction so it never holds
+-- stale data across game state changes.
+local _smeared_cache = nil
+local function clear_smeared_cache() _smeared_cache = nil end
 local function has_smeared_joker()
-  if not G.jokers or not G.jokers.cards then return false end
+  if _smeared_cache ~= nil then return _smeared_cache end
+  if not G.jokers or not G.jokers.cards then
+    _smeared_cache = false
+    return false
+  end
   for _, joker in ipairs(G.jokers.cards) do
     if not joker.debuff and joker.ability
       and joker.ability.name == 'Smeared Joker' then
+      _smeared_cache = true
       return true
     end
   end
+  _smeared_cache = false
   return false
 end
 
@@ -902,9 +916,15 @@ end
 -------------------------------------------------------------------------
 local function eval_per_card_jokers(
   card, resolved, chips, mult, state, pareidolia,
-  cards, scoring, hand_name, poker_hands, run_individual
+  cards, scoring, hand_name, poker_hands, run_individual, ctx_individual
 )
   local jokers = G.jokers and G.jokers.cards or {}
+
+  -- The context table is built once by the caller per Phase-1 pass
+  -- and we just mutate `other_card` for each scoring card. The
+  -- alternative — allocating a fresh table per (card × trigger ×
+  -- joker) — was up to 50 allocations per combo × 218 combos.
+  if ctx_individual then ctx_individual.other_card = card end
 
   for idx, joker in ipairs(jokers) do
     if not joker.debuff and joker.ability then
@@ -913,24 +933,33 @@ local function eval_per_card_jokers(
 
       -- Skip the real-dispatch loop entirely when no joker in the
       -- current roster has a context.individual branch — avoids ~N
-      -- snapshot_ability allocations + calculate_joker pcalls per
-      -- (card × trigger). run_individual is computed once per F2.
+      -- calculate_joker pcalls per (card × trigger). run_individual
+      -- is computed once per F2.
+      --
+      -- No snapshot here: every vanilla joker reachable in this path
+      -- (Photograph, Idol, Triboulet, Ancient, Scary/Smiley Face,
+      -- Walkie Talkie, Fibonacci, Even Steven, Odd Todd, Scholar,
+      -- Suit Mult, Onyx Agate, Arrowhead, Bloodstone, …) only reads
+      -- self.ability and returns an effect table. The mutators in
+      -- this context (Lucky Cat, Wee Joker, Hiker, Business Card,
+      -- 8 Ball, Golden Ticket, Rough Gem) are deny-listed above and
+      -- never enter this branch, so the snapshot was pure overhead.
+      -- pcall still guards against any modded joker erroring out.
       if run_individual
         and joker.calculate_joker
         and not per_card_deny[name]
         and not joker_main_deny[name]
-        and poker_hands then
-        local saved = snapshot_ability(joker.ability)
-        effect = joker:calculate_joker({
-          individual   = true,
-          cardarea     = G.play,
-          other_card   = card,
-          full_hand    = cards,
-          scoring_hand = scoring,
-          scoring_name = hand_name,
-          poker_hands  = poker_hands,
-        })
-        joker.ability = saved
+        and poker_hands
+        and ctx_individual then
+        local ok, ret = pcall(joker.calculate_joker, joker, ctx_individual)
+        -- Blueprint/Brainstorm mutate context.blueprint and
+        -- context.blueprint_card before recursing into their copy
+        -- target. Reset both after every call so subsequent jokers
+        -- in the loop don't see leftover state from a Blueprint
+        -- earlier in the slot order.
+        ctx_individual.blueprint      = nil
+        ctx_individual.blueprint_card = nil
+        if ok and type(ret) == 'table' then effect = ret end
       end
 
       if effect then
@@ -1011,20 +1040,30 @@ local function run_before_pass(cards, scoring, hand_name, poker_hands)
   if not G.jokers or not G.jokers.cards or not poker_hands then
     return snapshots
   end
+  -- Build the context once and share across all jokers in the loop.
+  local ctx = {
+    before       = true,
+    cardarea     = G.jokers,
+    full_hand    = cards,
+    scoring_hand = scoring,
+    scoring_name = hand_name,
+    poker_hands  = poker_hands,
+  }
   for _, joker in ipairs(G.jokers.cards) do
     local name = joker.ability and joker.ability.name or ''
+    -- Only the jokers in has_before_branch actually do anything in
+    -- context.before; firing the rest is wasted snapshot+pcall.
+    -- before_deny excludes the ones whose side effects we can't
+    -- roll back (DNA, Vampire, Midas Mask, Space Joker, To Do List).
     if not joker.debuff and joker.calculate_joker
+      and has_before_branch[name]
       and not before_deny[name]
       and not joker_main_deny[name] then
       snapshots[joker] = snapshot_ability(joker.ability)
-      pcall(joker.calculate_joker, joker, {
-        before       = true,
-        cardarea     = G.jokers,
-        full_hand    = cards,
-        scoring_hand = scoring,
-        scoring_name = hand_name,
-        poker_hands  = poker_hands,
-      })
+      pcall(joker.calculate_joker, joker, ctx)
+      -- Blueprint/Brainstorm reset (see eval_per_card_jokers).
+      ctx.blueprint      = nil
+      ctx.blueprint_card = nil
     end
   end
   return snapshots
@@ -1166,6 +1205,19 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- scoring_dollars tracks $ earned mid-hand from Gold-seal scoring
   -- triggers ($3 each), so Phase 3 jokers that read G.GAME.dollars
   -- (Bootstraps) see the real value the game presents to them.
+  -- Reusable context table for Phase-1's real-dispatch loop. Built
+  -- once and mutated per scoring card (see eval_per_card_jokers),
+  -- replacing a per-(card × trigger × joker) allocation.
+  local ctx_individual = run_individual and poker_hands and {
+    individual   = true,
+    cardarea     = G.play,
+    other_card   = nil,  -- mutated per card by eval_per_card_jokers
+    full_hand    = cards,
+    scoring_hand = scoring,
+    scoring_name = hand_name,
+    poker_hands  = poker_hands,
+  } or nil
+
   local scoring_dollars = 0
   for idx, card in ipairs(scoring) do
     if not card.debuff then
@@ -1226,7 +1278,8 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
         -- Per-card joker effects for this card
         chips, mult = eval_per_card_jokers(
           card, resolved, chips, mult, state, pareidolia,
-          cards, scoring, hand_name, poker_hands, run_individual
+          cards, scoring, hand_name, poker_hands, run_individual,
+          ctx_individual
         )
 
         -- Hiker: permanently adds to this card's perma_bonus,
@@ -1258,12 +1311,15 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -------------------------------------------------
 
   -- Jokers whose held-individual contribution is already covered by
-  -- the hardcoded fast paths above (Baron, Shoot the Moon) or whose
-  -- return is non-score (Mime returns repetitions only).
+  -- the hardcoded fast paths above (Baron, Shoot the Moon), whose
+  -- return is non-score (Mime returns repetitions only), or whose
+  -- real dispatch has unrollable side effects (Reserved Parking
+  -- mutates G.GAME.dollar_buffer and queues an event).
   local held_individual_deny = {
-    ['Baron']          = true,
-    ['Shoot the Moon'] = true,
-    ['Mime']           = true,
+    ['Baron']            = true,
+    ['Shoot the Moon']   = true,
+    ['Mime']             = true,
+    ['Reserved Parking'] = true,
   }
 
   -- Pre-scan for any joker that *might* fire in held-individual context
@@ -1277,6 +1333,20 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
       break
     end
   end
+
+  -- Reusable context table for the held-individual real-dispatch
+  -- loop. `other_card` gets mutated per held card before each joker
+  -- call. Built once per combo instead of once per (held card ×
+  -- trigger × joker).
+  local ctx_held = has_held_individual_joker and {
+    individual   = true,
+    cardarea     = G.hand,
+    other_card   = nil,
+    full_hand    = cards,
+    scoring_hand = scoring,
+    scoring_name = hand_name,
+    poker_hands  = poker_hands,
+  } or nil
 
   -- has_baron / baron_count / has_shoot_moon / shoot_moon_count are
   -- all read from `precomputed` — same reason Hiker is hoisted.
@@ -1316,22 +1386,21 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
       -- (Raised Fist, future additions). Mirrors the per-joker call
       -- in evaluate_play's held loop (state_events.lua:802) with
       -- cardarea = G.hand, individual = true.
+      --
+      -- No snapshot: every non-deny vanilla joker reachable here
+      -- (Raised Fist) only reads self.ability and returns an effect
+      -- table. Reserved Parking is in held_individual_deny because
+      -- it mutates G.GAME.dollar_buffer and queues an event.
       if has_held_individual_joker then
+        ctx_held.other_card = card
         for _, joker in ipairs(jokers_for_held) do
           local jname = joker.ability and joker.ability.name or ''
           if not joker.debuff and joker.ability and joker.calculate_joker
             and not held_individual_deny[jname] then
-            local saved = snapshot_ability(joker.ability)
-            local ok, effect = pcall(joker.calculate_joker, joker, {
-              individual   = true,
-              cardarea     = G.hand,
-              other_card   = card,
-              full_hand    = cards,
-              scoring_hand = scoring,
-              scoring_name = hand_name,
-              poker_hands  = poker_hands,
-            })
-            joker.ability = saved
+            local ok, effect = pcall(joker.calculate_joker, joker, ctx_held)
+            -- Blueprint/Brainstorm reset (see eval_per_card_jokers).
+            ctx_held.blueprint      = nil
+            ctx_held.blueprint_card = nil
             if ok and type(effect) == 'table' then
               if effect.h_mult then mult = mult + effect.h_mult end
               if effect.mult   then mult = mult + effect.mult   end
@@ -1392,6 +1461,19 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- at the uncommon joker's slot position. Presence is read from the
   -- precomputed bundle (see build_combo_precomputed).
 
+  -- Reusable joker_main context, allocated once per combo and shared
+  -- across all jokers in the Phase-3 loop below. Replaces the
+  -- per-joker table that was being allocated and discarded inside
+  -- the loop on every combo.
+  local ctx_joker_main = poker_hands and {
+    joker_main   = true,
+    full_hand    = cards,
+    scoring_hand = scoring,
+    scoring_name = hand_name,
+    poker_hands  = poker_hands,
+    cardarea     = G.jokers,
+  } or nil
+
   -- Iterate the real joker Card objects (not the resolved list) so
   -- calculate_joker is called on the actual Card — Blueprint's own
   -- calculate_joker handles delegation to its copy target internally.
@@ -1419,19 +1501,25 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
       ---------------------------------------------------------
       if joker.calculate_joker
         and not joker_main_deny[name]
-        and poker_hands then
-        local saved = snapshot_ability(joker.ability)
-        effect = joker:calculate_joker({
-          joker_main   = true,
-          full_hand    = cards,
-          scoring_hand = scoring,
-          scoring_name = hand_name,
-          poker_hands  = poker_hands,
-          cardarea     = G.jokers,
-        })
-        -- Restore ability even if calculate_joker errored or
-        -- mutated — the snapshot is our safety net.
-        joker.ability = saved
+        and ctx_joker_main then
+        -- No snapshot here: the joker_main branch in lovely's
+        -- patched card.lua is read-only for every vanilla joker
+        -- except Loyalty Card, which writes ability.loyalty_remaining
+        -- as a deterministic function of fields that don't change
+        -- between F2 calls (G.GAME.hands_played - hands_played_at_create
+        -- mod every+1) — same input, same output, so the "mutation"
+        -- is idempotent and safe to leave in place.
+        --
+        -- pcall still catches modded jokers that error out;
+        -- ctx_joker_main is reused across all jokers in this loop.
+        local ok, ret = pcall(joker.calculate_joker, joker, ctx_joker_main)
+        -- Blueprint/Brainstorm mutate these fields before recursing
+        -- into their copy target — reset so the next joker sees
+        -- a clean context (matches the per-call fresh-table behavior
+        -- the old code relied on).
+        ctx_joker_main.blueprint      = nil
+        ctx_joker_main.blueprint_card = nil
+        if ok and type(ret) == 'table' then effect = ret end
 
         -- Pre-increment correction: Supernova returns
         -- mult_mod = hands[name].played, but in the real play
@@ -1702,33 +1790,68 @@ local function needs_ordering(flags, scoring)
 end
 
 -------------------------------------------------------------------------
--- Suppress floating UI messages while score_combo dispatches through
--- real Card:calculate_joker. Steamodded's scaling.toml lovely patch
--- replaces direct ability mutations in scaling jokers (Green Joker,
--- Square Joker, Spare Trousers, Hologram, Runner, Obelisk, Ride the
--- Bus, Vampire, ...) with SMODS.scale_card, which displays a floating
--- "Upgrade!" message. Without suppression, F2's ~218 combos × ~5
--- jokers flood the UI with Upgrade messages even though
--- snapshot_ability rolls back the numeric mutation.
+-- Suppress floating UI messages and event-queue side effects while
+-- score_combo dispatches through real Card:calculate_joker.
+-- Steamodded's scaling.toml lovely patch replaces direct ability
+-- mutations in scaling jokers (Green Joker, Square Joker, Spare
+-- Trousers, Hologram, Runner, Obelisk, Ride the Bus, Vampire, ...)
+-- with SMODS.scale_card, which displays a floating "Upgrade!"
+-- message. Without suppression, F2's ~218 combos × ~5 jokers flood
+-- the UI with Upgrade messages even though snapshot_ability rolls
+-- back the numeric mutation.
 --
--- Belt-and-suspenders: set SMODS.no_resolve (gates messages at
--- smods/src/utils.lua:1334 and juice at :1515) AND stub
--- card_eval_status_text directly, since some code paths call it
--- without going through SMODS.calculate_effect. The synchronous
--- ability bump still applies in-place, so the score is unaffected.
+-- Defense in depth — every gate is independently sufficient, but
+-- together they make it almost impossible for analysis to leak a
+-- visible side effect:
+--   1. SMODS.no_resolve gates messages (smods utils.lua:1334) and
+--      juice (:1515) inside SMODS.calculate_effect.
+--   2. card_eval_status_text is stubbed because some game code paths
+--      call it without going through SMODS.calculate_effect.
+--   3. G.E_MANAGER:add_event is stubbed because a joker we haven't
+--      audited (or a future modded joker) might queue events
+--      directly. Across ~218 combos × ~50 dispatches, even a small
+--      leak compounds into observable lag and stale events firing
+--      after analysis returns.
+--   4. juice_card / juice_card_until / play_sound are stubbed for
+--      the same reason — they bypass SMODS gating.
+-- The synchronous ability mutations from scaling jokers still apply
+-- in-place; run_before_pass's snapshot rolls them back. Score is
+-- unaffected because nothing here changes the math.
 local function with_no_resolve(fn, ...)
-  local prev_resolve, real_status_text
-  if SMODS then
-    prev_resolve = SMODS.no_resolve
-    SMODS.no_resolve = true
+  -- Clear at entry so stale joker-list state from a prior call can't
+  -- bleed in (e.g. after a Blueprint copy is rerouted).
+  clear_smeared_cache()
+  local prev_resolve = SMODS and SMODS.no_resolve
+  if SMODS then SMODS.no_resolve = true end
+
+  local stubbed_globals = {
+    'card_eval_status_text', 'juice_card', 'juice_card_until',
+    'play_sound', 'update_hand_text',
+  }
+  local saved = {}
+  for _, k in ipairs(stubbed_globals) do
+    if _G[k] ~= nil then
+      saved[k] = _G[k]
+      _G[k] = function() end
+    end
   end
-  if _G and _G.card_eval_status_text then
-    real_status_text = _G.card_eval_status_text
-    _G.card_eval_status_text = function() end
+
+  local saved_add_event
+  if G and G.E_MANAGER and G.E_MANAGER.add_event then
+    saved_add_event = G.E_MANAGER.add_event
+    G.E_MANAGER.add_event = function() end
   end
+
   local results = { pcall(fn, ...) }
+
+  if saved_add_event then G.E_MANAGER.add_event = saved_add_event end
+  for k, v in pairs(saved) do _G[k] = v end
   if SMODS then SMODS.no_resolve = prev_resolve end
-  if real_status_text then _G.card_eval_status_text = real_status_text end
+  -- Clear at exit too: don't hold a flag while game state is free
+  -- to change between calls (joker bought/sold, Smeared given a
+  -- new edition, etc.).
+  clear_smeared_cache()
+
   if not results[1] then error(results[2], 0) end
   return unpack(results, 2)
 end
