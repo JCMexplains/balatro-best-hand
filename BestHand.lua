@@ -305,6 +305,61 @@ local per_card_deny = {
 }
 
 -------------------------------------------------------------------------
+-- Jokers that NEVER return anything from context.joker_main:
+-- passive (Pareidolia, Splash, Showman, Smeared, Four Fingers,
+-- Shortcut), retrigger-only (Hack, Sock and Buskin, Hanging Chad,
+-- Dusk, Seltzer, Mime), per-card individual-only (Photograph,
+-- Triboulet, Idol, Ancient, Scary/Smiley Face, Walkie Talkie,
+-- Fibonacci, Even Steven, Odd Todd, Scholar, Onyx Agate, Arrowhead,
+-- Greedy/Lusty/Wrathful/Gluttonous, Hiker, Lucky Cat, Rough Gem,
+-- Bloodstone, 8 Ball, Golden Ticket, Business Card), held-only
+-- (Baron, Shoot the Moon, Reserved Parking, Raised Fist), and
+-- before/discard-only (DNA, Vampire, Midas Mask, Space Joker,
+-- To Do List, Burnt Joker).
+--
+-- Used in Phase 3 to skip pcall(calculate_joker, joker_main) entirely.
+-- The Phase 3 inner loop checks this against the *resolved* joker name
+-- so Blueprint copying e.g. Baron also gets skipped. Critical because
+-- the lovely-patched joker_main has a catch-all `if x_mult > 1 then
+-- return Xmult_mod` (and similar for t_mult/t_chips) — these jokers
+-- have all of those at their default values, so the branch never
+-- fires, but pcalling them still walks the entire if-elseif chain.
+-- Skipping ~6 of 7 pcalls per combo on common loadouts × 218 combos
+-- per F2 saves ~1,300 wasted pcalls.
+-------------------------------------------------------------------------
+local joker_main_no_fire = {
+  -- Passive
+  ['Pareidolia'] = true, ['Splash']         = true,
+  ['Showman']    = true, ['Smeared Joker']  = true,
+  ['Four Fingers'] = true, ['Shortcut']     = true,
+  -- Retrigger-only
+  ['Hack']       = true, ['Sock and Buskin'] = true,
+  ['Hanging Chad'] = true, ['Dusk']         = true,
+  ['Seltzer']    = true, ['Mime']           = true,
+  -- Per-card (G.play individual)
+  ['Photograph'] = true, ['Triboulet']      = true,
+  ['The Idol']   = true, ['Ancient Joker']  = true,
+  ['Scary Face'] = true, ['Smiley Face']    = true,
+  ['Walkie Talkie'] = true, ['Fibonacci']   = true,
+  ['Even Steven'] = true, ['Odd Todd']      = true,
+  ['Scholar']    = true, ['Onyx Agate']     = true,
+  ['Arrowhead']  = true, ['Greedy Joker']   = true,
+  ['Lusty Joker'] = true, ['Wrathful Joker'] = true,
+  ['Gluttonous Joker'] = true,
+  ['Hiker']      = true, ['Lucky Cat']      = true,
+  ['Rough Gem']  = true, ['Bloodstone']     = true,
+  ['8 Ball']     = true, ['Golden Ticket']  = true,
+  ['Business Card'] = true,
+  -- Held individual
+  ['Baron']        = true, ['Shoot the Moon']   = true,
+  ['Reserved Parking'] = true, ['Raised Fist']  = true,
+  -- Before / discard / first-hand only
+  ['DNA']        = true, ['Vampire']        = true,
+  ['Midas Mask'] = true, ['Space Joker']    = true,
+  ['To Do List'] = true, ['Burnt Joker']    = true,
+}
+
+-------------------------------------------------------------------------
 -- Paired suits for Smeared Joker: Hearts<->Diamonds, Spades<->Clubs.
 -- Defined early because suit_matches, count_suits, and get_flush_members
 -- all need it.
@@ -546,6 +601,215 @@ local default_level_increments = {
   ['Flush House']     = { l_chips = 40, l_mult = 4 },
   ['Flush Five']      = { l_chips = 40, l_mult = 4 },
 }
+
+-------------------------------------------------------------------------
+-- Fast custom evaluator that replaces G.FUNCS.get_poker_hand_info on
+-- the score_combo hot path. The vanilla path was 39% of total F2 cost
+-- because evaluate_poker_hand allocates 12 sub-result tables and runs
+-- four separate O(n²) get_X_same passes (for 5/4/3/2 of a kind), plus
+-- get_flush, get_straight, and get_highest, each of which allocates
+-- more tables and walks the hand again.
+--
+-- Our evaluator does it all in a single O(n) pass over the cards and
+-- a fixed-size O(14) walk for straight detection. The returned
+-- poker_hands table is "lite": each value is one of two shared tables
+-- (POKER_HANDS_CONTAINS / POKER_HANDS_EMPTY) — no per-call nested
+-- allocations. Every joker that consults context.poker_hands does so
+-- via `next(context.poker_hands[type])`, which is satisfied by the
+-- shared tables (CONTAINS = {true} so next() returns truthy; EMPTY = {}
+-- so next() returns nil). Verified via grep over the lovely-patched
+-- card.lua: nothing reads the actual cards out of poker_hands[type].
+--
+-- Stone Cards: get_id returns a random negative, so they never pair
+-- and never participate in straight detection. SMODS.has_no_suit
+-- returns true, so they don't count toward flushes. We skip them in
+-- both rank-grouping and suit-counting.
+--
+-- Wild Cards: have a normal base.id (so they can pair on rank), and
+-- SMODS.has_any_suit returns true (so they count toward every suit).
+-- We track them separately and add to all four suit counts.
+--
+-- Smeared Joker pairs Hearts↔Diamonds and Spades↔Clubs into virtual
+-- suits — a Diamond card counts as Hearts too. When `has_smeared` is
+-- true, each card's actual suit also adds to its smeared partner.
+-------------------------------------------------------------------------
+local POKER_HANDS_CONTAINS = {true}  -- next() returns key 1 → truthy
+local POKER_HANDS_EMPTY    = {}      -- next() returns nil      → falsy
+
+local function fast_evaluate_poker_hand(cards, has_smeared, four_fingers, has_shortcut)
+  local n = #cards
+  if n == 0 then
+    -- Edge case: empty input. Return High Card as the safest fallback
+    -- so callers that read hand_name don't get nil.
+    return 'High Card', {
+      ['High Card']       = POKER_HANDS_EMPTY,
+      ['Pair']            = POKER_HANDS_EMPTY,
+      ['Two Pair']        = POKER_HANDS_EMPTY,
+      ['Three of a Kind'] = POKER_HANDS_EMPTY,
+      ['Straight']        = POKER_HANDS_EMPTY,
+      ['Flush']           = POKER_HANDS_EMPTY,
+      ['Full House']      = POKER_HANDS_EMPTY,
+      ['Four of a Kind']  = POKER_HANDS_EMPTY,
+      ['Straight Flush']  = POKER_HANDS_EMPTY,
+      ['Five of a Kind']  = POKER_HANDS_EMPTY,
+      ['Flush House']     = POKER_HANDS_EMPTY,
+      ['Flush Five']      = POKER_HANDS_EMPTY,
+      ['Royal Flush']     = POKER_HANDS_EMPTY,
+    }
+  end
+
+  -- Single pass: rank counts (Wild Cards keep their nominal rank),
+  -- suit counts (Wilds add to all four), Stones excluded.
+  local rank_count = {}
+  local suit_count_h, suit_count_d = 0, 0
+  local suit_count_s, suit_count_c = 0, 0
+  local wild_count = 0
+
+  for i = 1, n do
+    local card = cards[i]
+    local a = card.ability
+    local aname = a and a.name
+    if aname == 'Stone Card' then
+      -- ignore for rank and suit
+    else
+      local id = card.base.id
+      rank_count[id] = (rank_count[id] or 0) + 1
+      if aname == 'Wild Card' then
+        wild_count = wild_count + 1
+      else
+        local s = card.base.suit
+        if s == 'Hearts' then suit_count_h = suit_count_h + 1
+        elseif s == 'Diamonds' then suit_count_d = suit_count_d + 1
+        elseif s == 'Spades' then suit_count_s = suit_count_s + 1
+        elseif s == 'Clubs' then suit_count_c = suit_count_c + 1 end
+      end
+    end
+  end
+
+  -- Effective per-suit counts including Wilds and Smeared aliasing.
+  local eff_h = suit_count_h + wild_count
+  local eff_d = suit_count_d + wild_count
+  local eff_s = suit_count_s + wild_count
+  local eff_c = suit_count_c + wild_count
+  if has_smeared then
+    eff_h = eff_h + suit_count_d
+    eff_d = eff_d + suit_count_h
+    eff_s = eff_s + suit_count_c
+    eff_c = eff_c + suit_count_s
+  end
+
+  -- Best X-of-a-kind. Iterate rank_count once.
+  local has5, has4, has3 = false, false, false
+  local triple_id = nil
+  local pair_distinct = 0  -- distinct ranks with count >= 2
+  for id, cnt in pairs(rank_count) do
+    if cnt >= 5 then has5 = true end
+    if cnt >= 4 then has4 = true end
+    if cnt >= 3 then
+      has3 = true
+      if not triple_id or id > triple_id then triple_id = id end
+    end
+    if cnt >= 2 then pair_distinct = pair_distinct + 1 end
+  end
+
+  -- Full House: triple AND another pair (distinct rank).
+  -- pair_distinct counts triples too (since count >= 2), so a triple
+  -- alone gives pair_distinct == 1. We need a SECOND pair-or-better.
+  local has_full_house = has3 and pair_distinct >= 2
+
+  local has_two_pair = pair_distinct >= 2
+  local has_pair     = pair_distinct >= 1
+
+  -- Flush
+  local flush_min = four_fingers and 4 or 5
+  local has_flush = eff_h >= flush_min or eff_d >= flush_min
+                 or eff_s >= flush_min or eff_c >= flush_min
+
+  -- Straight: walk ranks 1..14, allow ace-low (id 14 → also id 1).
+  -- Shortcut allows one gap.
+  local straight_min = four_fingers and 4 or 5
+  local has_straight = false
+  do
+    local present_1  = rank_count[14] and true or false  -- ace-low
+    local present_2  = rank_count[2]  and true or false
+    local present_3  = rank_count[3]  and true or false
+    local present_4  = rank_count[4]  and true or false
+    local present_5  = rank_count[5]  and true or false
+    local present_6  = rank_count[6]  and true or false
+    local present_7  = rank_count[7]  and true or false
+    local present_8  = rank_count[8]  and true or false
+    local present_9  = rank_count[9]  and true or false
+    local present_10 = rank_count[10] and true or false
+    local present_11 = rank_count[11] and true or false
+    local present_12 = rank_count[12] and true or false
+    local present_13 = rank_count[13] and true or false
+    local present_14 = rank_count[14] and true or false
+    local p = {present_1, present_2, present_3, present_4, present_5,
+      present_6, present_7, present_8, present_9, present_10,
+      present_11, present_12, present_13, present_14}
+    local run = 0
+    local skipped = false
+    for j = 1, 14 do
+      if p[j] then
+        run = run + 1
+        skipped = false
+        if run >= straight_min then has_straight = true; break end
+      elseif has_shortcut and not skipped and j ~= 14 then
+        skipped = true
+        run = run + 1
+        if run >= straight_min then has_straight = true; break end
+      else
+        run = 0
+        skipped = false
+      end
+    end
+  end
+
+  -- Composite types
+  local has_flush_five     = has5 and has_flush
+  local has_flush_house    = has_full_house and has_flush
+  local has_straight_flush = has_straight and has_flush
+
+  -- Pick the top hand_name in priority order. Mirrors
+  -- state_events.lua:541 — note Royal Flush isn't a separate type
+  -- in the table; it's a display variant of Straight Flush. Since
+  -- score_combo only uses the text key for hand-info lookup, we
+  -- always return 'Straight Flush' (G.GAME.hands keys this hand
+  -- type as 'Straight Flush' in both cases).
+  local hand_name
+  if     has_flush_five     then hand_name = 'Flush Five'
+  elseif has_flush_house    then hand_name = 'Flush House'
+  elseif has5               then hand_name = 'Five of a Kind'
+  elseif has_straight_flush then hand_name = 'Straight Flush'
+  elseif has4               then hand_name = 'Four of a Kind'
+  elseif has_full_house     then hand_name = 'Full House'
+  elseif has_flush          then hand_name = 'Flush'
+  elseif has_straight       then hand_name = 'Straight'
+  elseif has3               then hand_name = 'Three of a Kind'
+  elseif has_two_pair       then hand_name = 'Two Pair'
+  elseif has_pair           then hand_name = 'Pair'
+  else                            hand_name = 'High Card'
+  end
+
+  -- Lite poker_hands. Fresh shell table per call (one alloc) but
+  -- the values are shared singletons (no nested allocs).
+  local ph = {
+    ['High Card']       = POKER_HANDS_CONTAINS,
+    ['Pair']            = has_pair           and POKER_HANDS_CONTAINS or POKER_HANDS_EMPTY,
+    ['Two Pair']        = has_two_pair       and POKER_HANDS_CONTAINS or POKER_HANDS_EMPTY,
+    ['Three of a Kind'] = has3               and POKER_HANDS_CONTAINS or POKER_HANDS_EMPTY,
+    ['Straight']        = has_straight       and POKER_HANDS_CONTAINS or POKER_HANDS_EMPTY,
+    ['Flush']           = has_flush          and POKER_HANDS_CONTAINS or POKER_HANDS_EMPTY,
+    ['Full House']      = has_full_house     and POKER_HANDS_CONTAINS or POKER_HANDS_EMPTY,
+    ['Four of a Kind']  = has4               and POKER_HANDS_CONTAINS or POKER_HANDS_EMPTY,
+    ['Straight Flush']  = has_straight_flush and POKER_HANDS_CONTAINS or POKER_HANDS_EMPTY,
+    ['Five of a Kind']  = has5               and POKER_HANDS_CONTAINS or POKER_HANDS_EMPTY,
+    ['Flush House']     = has_flush_house    and POKER_HANDS_CONTAINS or POKER_HANDS_EMPTY,
+    ['Flush Five']      = has_flush_five     and POKER_HANDS_CONTAINS or POKER_HANDS_EMPTY,
+    ['Royal Flush']     = POKER_HANDS_EMPTY,
+  }
+  return hand_name, ph
+end
 
 -------------------------------------------------------------------------
 -- Check if The Flint boss blind is active (halves base chips and mult).
@@ -827,7 +1091,22 @@ local function build_combo_precomputed(resolved)
   -- no joker in the (resolved) list has a branch for that context.
   -- Huge win on common joker loadouts (Blueprint + copy jokers +
   -- Steel Joker) where neither phase contributes anything.
+  --
+  -- run_individual = any individual-branch joker (used inside
+  -- eval_per_card_jokers' inner real-dispatch gate).
+  -- enter_per_card_loop = caller-side gate: only call
+  -- eval_per_card_jokers at all when a non-deny individual joker
+  -- exists OR Bloodstone is present (the only deny-listed joker
+  -- with a score-affecting fallback). Without this, Hiker-only
+  -- loadouts force the loop to run and pcall every other joker
+  -- pointlessly — e.g. ~10,900 wasted pcalls per F2 on a 5-card
+  -- played × 2 triggers × 6 non-deny jokers × 218 combos hand.
   local run_before, run_individual = false, false
+  local has_pure_individual, has_bloodstone_pc = false, false
+  -- Hand-evaluator inputs that don't change between combos.
+  local has_smeared = false
+  local has_four_fingers = false
+  local has_shortcut = false
   for _, j in ipairs(resolved) do
     local n = j.name
     if n == 'Pareidolia' then
@@ -842,21 +1121,36 @@ local function build_combo_precomputed(resolved)
       shoot_moon_count = shoot_moon_count + 1
     elseif n == 'Baseball Card' then
       has_baseball_card = true
+    elseif n == 'Bloodstone' then
+      has_bloodstone_pc = true
+    elseif n == 'Smeared Joker' then
+      has_smeared = true
+    elseif n == 'Four Fingers' then
+      has_four_fingers = true
+    elseif n == 'Shortcut' then
+      has_shortcut = true
     end
     if has_before_branch[n] then run_before = true end
-    if has_individual_branch[n] then run_individual = true end
+    if has_individual_branch[n] then
+      run_individual = true
+      if not per_card_deny[n] then has_pure_individual = true end
+    end
   end
   return {
-    resolved          = resolved,
-    pareidolia        = pareidolia,
-    hiker_add         = hiker_count * 5,
-    has_baron         = has_baron,
-    baron_count       = baron_count,
-    has_shoot_moon    = has_shoot_moon,
-    shoot_moon_count  = shoot_moon_count,
-    has_baseball_card = has_baseball_card,
-    run_before        = run_before,
-    run_individual    = run_individual,
+    resolved            = resolved,
+    pareidolia          = pareidolia,
+    hiker_add           = hiker_count * 5,
+    has_baron           = has_baron,
+    baron_count         = baron_count,
+    has_shoot_moon      = has_shoot_moon,
+    shoot_moon_count    = shoot_moon_count,
+    has_baseball_card   = has_baseball_card,
+    run_before          = run_before,
+    run_individual      = run_individual,
+    enter_per_card_loop = has_pure_individual or has_bloodstone_pc,
+    has_smeared         = has_smeared,
+    has_four_fingers    = has_four_fingers,
+    has_shortcut        = has_shortcut,
   }
 end
 
@@ -1092,13 +1386,22 @@ end
 -- caller can iterate the cartesian product to enumerate all outcomes.
 -------------------------------------------------------------------------
 local function score_combo(cards, all_cards, prob_config, range_config, precomputed)
-  -- Identify the poker hand type and look up base chips/mult from level.
-  -- Also capture poker_hands (the sub-hand containment table the game builds)
-  -- because the hybrid joker path passes it to real calculate_joker calls
-  -- for jokers that check "does this hand contain a Pair?" etc.
-  -- get_poker_hand_info returns (hand_name, display_name, poker_hands_table);
-  -- skip the display_name with _ to get the table in the 3rd slot.
-  local hand_name, _, poker_hands = G.FUNCS.get_poker_hand_info(cards)
+  -- Build the precomputed bundle here (rather than after the hand-info
+  -- call) so we can pass smeared/four-fingers/shortcut flags into the
+  -- fast hand evaluator on the very first call.
+  precomputed = precomputed or build_combo_precomputed(resolve_jokers())
+
+  -- Identify the poker hand type via our custom evaluator, which is
+  -- ~5× faster than G.FUNCS.get_poker_hand_info because it does a
+  -- single O(n) pass over the cards instead of running four
+  -- get_X_same passes plus get_flush/straight/highest, each
+  -- allocating their own result tables. The returned poker_hands
+  -- table is "lite" — values are shared singletons so jokers'
+  -- `next(context.poker_hands[type])` checks return the right
+  -- truthiness without per-call nested allocations.
+  local hand_name, poker_hands = fast_evaluate_poker_hand(
+    cards, precomputed.has_smeared,
+    precomputed.has_four_fingers, precomputed.has_shortcut)
   if not hand_name then return nil, 0 end
 
   -- With Four Fingers, Balatro may detect Straight Flush / Royal Flush
@@ -1161,17 +1464,17 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- the Moon, Baseball Card) depends only on the joker list, not on
   -- which scoring subset we're evaluating.
   -- Must precede the before-pass: run_before is read below.
-  precomputed = precomputed or build_combo_precomputed(resolve_jokers())
-  local resolved          = precomputed.resolved
-  local pareidolia        = precomputed.pareidolia
-  local hiker_add         = precomputed.hiker_add
-  local has_baron         = precomputed.has_baron
-  local baron_count       = precomputed.baron_count
-  local has_shoot_moon    = precomputed.has_shoot_moon
-  local shoot_moon_count  = precomputed.shoot_moon_count
-  local has_baseball_card = precomputed.has_baseball_card
-  local run_before        = precomputed.run_before
-  local run_individual    = precomputed.run_individual
+  local resolved            = precomputed.resolved
+  local pareidolia          = precomputed.pareidolia
+  local hiker_add           = precomputed.hiker_add
+  local has_baron           = precomputed.has_baron
+  local baron_count         = precomputed.baron_count
+  local has_shoot_moon      = precomputed.has_shoot_moon
+  local shoot_moon_count    = precomputed.shoot_moon_count
+  local has_baseball_card   = precomputed.has_baseball_card
+  local run_before          = precomputed.run_before
+  local run_individual      = precomputed.run_individual
+  local enter_per_card_loop = precomputed.enter_per_card_loop
 
   -- context.before pre-pass: scaling jokers bump their ability.* here.
   -- Must be restored before return so the next combo iteration sees
@@ -1275,12 +1578,18 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
         -- Card edition bonuses (foil/holo/polychrome)
         chips, mult = apply_edition(card.edition, chips, mult)
 
-        -- Per-card joker effects for this card
-        chips, mult = eval_per_card_jokers(
-          card, resolved, chips, mult, state, pareidolia,
-          cards, scoring, hand_name, poker_hands, run_individual,
-          ctx_individual
-        )
+        -- Per-card joker effects for this card. Skip the call
+        -- entirely when no joker would actually contribute — this
+        -- cuts ~10,900 wasted pcalls per F2 on common loadouts
+        -- where Hiker/Lucky Cat/Wee Joker (deny-listed) are the
+        -- only jokers with an individual branch.
+        if enter_per_card_loop then
+          chips, mult = eval_per_card_jokers(
+            card, resolved, chips, mult, state, pareidolia,
+            cards, scoring, hand_name, poker_hands, run_individual,
+            ctx_individual
+          )
+        end
 
         -- Hiker: permanently adds to this card's perma_bonus,
         -- read on the next trigger of this same card.
@@ -1499,9 +1808,23 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
       -- self.ability.* as a side effect, the game state is
       -- never corrupted by our read-only probing.
       ---------------------------------------------------------
+      -- Skip the pcall for jokers that never return anything from
+      -- joker_main (passive, retrigger-only, per-card-only, held-only,
+      -- before-only). Single name lookup against the *resolved* name
+      -- so Blueprint/Brainstorm copying e.g. Baron also gets skipped.
+      -- The lovely-patched joker_main has catch-all branches
+      -- (x_mult > 1 / t_mult > 0 / t_chips > 0) but for every joker
+      -- in this set the relevant ability fields stay at their default
+      -- (1 or 0) — they're never mutated by these jokers' own code —
+      -- so the catch-all never fires. Skipping ~6 of 7 pcalls per
+      -- combo on common loadouts × 218 combos saves ~1.3k pcalls.
+      local r_entry = resolved[resolved_idx]
+      local r_name = r_entry and r_entry.name or name
+
       if joker.calculate_joker
         and not joker_main_deny[name]
-        and ctx_joker_main then
+        and ctx_joker_main
+        and not joker_main_no_fire[r_name] then
         -- No snapshot here: the joker_main branch in lovely's
         -- patched card.lua is read-only for every vanilla joker
         -- except Loyalty Card, which writes ability.loyalty_remaining
