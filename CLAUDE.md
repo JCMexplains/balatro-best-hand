@@ -17,7 +17,7 @@ There is no build step — Balatro loads `BestHand.lua` directly. The relevant c
 - **Syntax check**: `luac -p BestHand.lua` (Lua 5.1, no execution). Run after every edit; the cheapest way to catch parse errors before launching the game.
 - **Replay all captures through the mod**: `lua batch_verify.lua [captures_dir]` — defaults to `./best_hand_captures`. Reports `ok` / `ok(var)` / `MISS` per fixture.
 - **Investigate a single miss**: `lua trace_one.lua path/to/capture.lua`. `BH_DEBUG=1 lua trace_one.lua ...` enables per-joker Phase-3 tracing.
-- **Validate the oracle harness against captured ground truth**: `lua _oracle_validate.lua [captures_dir]` — runs Balatro's real `G.FUNCS.evaluate_play` on every capture and verifies it reproduces the captured `actual_score`. Exit code is non-zero if any fixture disagrees or errors.
+- **Fuzz mod vs real game**: `lua synth_fuzz.lua [N] [out_dir]` generates `N` random deterministic fixtures (no probabilistic effects), scores each with both `score_combo` and Balatro's real `G.FUNCS.evaluate_play` via `harness.lua`, and writes any disagreement to `out_dir` in the F4 capture format. `FUZZ_SEED=<int>` for reproducible runs. Defaults: `N=200`, `out_dir=best_hand_captures`.
 
 All offline tools require `balatro_src/` (a local extraction of Balatro's Lua source — gitignored, not shipped). Without it the harness can't load `card.lua` and the tools fail at startup.
 
