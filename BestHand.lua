@@ -1639,13 +1639,30 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
 
   -- Pre-scan for any joker that *might* fire in held-individual context
   -- so we don't enter the trigger loop on cards no joker cares about.
+  --
+  -- Also build a skip set for Blueprint/Brainstorm copies whose target
+  -- is in held_individual_deny. Those copies' contribution is already
+  -- counted by the hardcoded fast paths via baron_count / shoot_moon_count
+  -- (resolve_jokers re-labels copies with the target's name). Letting
+  -- their calculate_joker fire here forwards to Baron/Shoot the Moon
+  -- and double-counts — manifests as ~25× over-prediction on Flush Five
+  -- with Blueprint + Baron + Brainstorm and 4 held Kings (×1.5^2 per
+  -- held King × 4 = ×1.5^8 ≈ 25.6).
   local jokers_for_held = G.jokers and G.jokers.cards or {}
   local has_held_individual_joker = false
-  for _, j in ipairs(jokers_for_held) do
-    if not j.debuff and j.ability and j.calculate_joker
-      and not held_individual_deny[j.ability.name or ''] then
-      has_held_individual_joker = true
-      break
+  local held_skip_copies = {}
+  for i, j in ipairs(jokers_for_held) do
+    if not j.debuff and j.ability and j.calculate_joker then
+      local nm = j.ability.name or ''
+      if nm == 'Blueprint' or nm == 'Brainstorm' then
+        local target = resolve_copy_target(jokers_for_held, i, {})
+        if target and held_individual_deny[target.name or ''] then
+          held_skip_copies[j] = true
+        end
+      end
+      if not held_individual_deny[nm] and not held_skip_copies[j] then
+        has_held_individual_joker = true
+      end
     end
   end
 
@@ -1711,7 +1728,8 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
         for _, joker in ipairs(jokers_for_held) do
           local jname = joker.ability and joker.ability.name or ''
           if not joker.debuff and joker.ability and joker.calculate_joker
-            and not held_individual_deny[jname] then
+            and not held_individual_deny[jname]
+            and not held_skip_copies[joker] then
             local ok, effect = pcall(joker.calculate_joker, joker, ctx_held)
             -- Blueprint/Brainstorm reset (see eval_per_card_jokers).
             ctx_held.blueprint      = nil
