@@ -219,7 +219,17 @@ local function attach_card(t)
   t.base.suit_nominal = t.base.suit_nominal or SUIT_NOMINAL[t.base.suit] or 0
   t.base.suit_nominal_original = t.base.suit_nominal_original
     or SUIT_NOMINAL_ORIG[t.base.suit] or 0
-  t.base.face_nominal = t.base.face_nominal or 0
+  -- Real Card:set_base assigns face_nominal per value. Captures don't
+  -- record it; without this, get_nominal's ordering is suit-dominated.
+  if t.base.face_nominal == nil then
+    local v = t.base.value
+    if     v == 'Jack'  then t.base.face_nominal = 0.1
+    elseif v == 'Queen' then t.base.face_nominal = 0.2
+    elseif v == 'King'  then t.base.face_nominal = 0.3
+    elseif v == 'Ace'   then t.base.face_nominal = 0.4
+    else                     t.base.face_nominal = 0
+    end
+  end
   unique_id_seq = unique_id_seq + 1
   t.unique_val = t.unique_val or unique_id_seq
   t.debuff = t.debuff or false
@@ -308,6 +318,12 @@ for _, c in ipairs(played) do all_cards[#all_cards+1] = c end
 for _, c in ipairs(held)   do all_cards[#all_cards+1] = c end
 G.playing_cards = {}
 for _, c in ipairs(all_cards) do G.playing_cards[#G.playing_cards+1] = c end
+
+-- Populate G.play.cards / G.hand.cards so jokers that read them
+-- directly (Raised Fist iterates G.hand.cards for the lowest held
+-- card) see the same held state the in-game scoring path would.
+G.play.cards = played
+G.hand.cards = held
 local steel_target = fx.game and fx.game.steel_card_count
 if steel_target then
   local have = 0

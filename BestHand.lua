@@ -399,11 +399,16 @@ end
 -------------------------------------------------------------------------
 local function get_straight_members(cards)
   if #cards <= 1 then return cards end
-  -- If the full combo is already a straight, every card participates.
-  -- Without this check Four Fingers breaks 5-card straights: removing
-  -- any single card leaves a 4-card subset that still registers as a
-  -- straight, so the kicker-detection loop below would incorrectly
-  -- drop a valid scoring card.
+  -- get_straight (balatro_src/functions/misc_functions.lua:548) returns
+  -- just the cards that participate in the straight pattern, honouring
+  -- Four Fingers (4-card straight) and Shortcut (gap) jokers. Its
+  -- output matches evaluate_poker_hand's scoring_hand for Straight
+  -- exactly. If get_straight isn't loaded (standalone analyzer mode),
+  -- fall back to the subset-detection below.
+  if get_straight then
+    local s = get_straight(cards)
+    if s and s[1] then return s[1] end
+  end
   local full_name = G.FUNCS.get_poker_hand_info(cards)
   if full_name and contains_straight[full_name] then return cards end
   for i = 1, #cards do
@@ -459,18 +464,26 @@ local function get_triggers(card, card_index, is_held, pareidolia, resolved)
     end
   end
 
+  -- Stone Cards override Card:get_id to return a random negative
+  -- value, so Hack's 2-5 check and Sock and Buskin's face-card check
+  -- never see them as a target. Skip rank-based retriggers here.
+  local is_stone = card.ability and card.ability.name == 'Stone Card'
+
   if not is_held then
     -- Retrigger jokers for played/scoring cards
     for _, name in ipairs(joker_names) do
       if name == 'Hack' then
         -- +1 retrigger for cards ranked 2, 3, 4, or 5
         local id = card.base.id
-        if id >= 2 and id <= 5 then triggers = triggers + 1 end
+        if not is_stone and id >= 2 and id <= 5 then triggers = triggers + 1 end
       elseif name == 'Sock and Buskin' then
         -- +1 retrigger for face cards (J=11, Q=12, K=13).
-        -- Pareidolia makes every card count as face.
+        -- Pareidolia makes every card count as face, including Stones
+        -- (Card:is_face short-circuits on Pareidolia before any id
+        -- check). Without Pareidolia, Stones never qualify — their
+        -- get_id returns a negative random.
         local is_face = pareidolia
-          or (card.base.id >= 11 and card.base.id <= 13)
+          or (not is_stone and card.base.id >= 11 and card.base.id <= 13)
         if is_face then triggers = triggers + 1 end
       elseif name == 'Hanging Chad' then
         -- +2 retriggers on the first scoring card
@@ -577,10 +590,21 @@ local function get_scoring_cards(cards, hand_name)
       members = get_flush_members(cards)
     elseif hand_name == 'Straight' then
       members = get_straight_members(cards)
-    else -- Straight Flush / Royal Flush: check flush first, then straight
-      members = get_flush_members(cards)
-      if #members >= #cards then
-        members = get_straight_members(cards)
+    else
+      -- Straight Flush / Royal Flush: scoring_hand is the union of
+      -- flush members and straight members. With Four Fingers the
+      -- two sets may not overlap entirely (4-card flush + a 5th card
+      -- that completes the straight), and Balatro scores both groups.
+      -- evaluate_poker_hand builds the same union at line 428-443.
+      local f = get_flush_members(cards)
+      local s = get_straight_members(cards)
+      local seen = {}
+      members = {}
+      for _, c in ipairs(f) do
+        if not seen[c] then seen[c] = true; members[#members + 1] = c end
+      end
+      for _, c in ipairs(s) do
+        if not seen[c] then seen[c] = true; members[#members + 1] = c end
       end
     end
     if #members >= #cards then return cards end
@@ -609,12 +633,19 @@ local function get_scoring_cards(cards, hand_name)
     end
   end
 
-  -- Group cards by rank id to identify the hand's core groups
+  -- Group cards by rank id to identify the hand's core groups.
+  -- Stone Cards are excluded from poker-hand evaluation in Balatro:
+  -- they don't participate in pair / three-of-a-kind / etc. groups.
+  -- Including them here would let a Stone Ace pair with a real Ace
+  -- and steal the pair selection from a lower real pair. Stones get
+  -- added back to scoring_set unconditionally below as kickers.
   local by_rank = {}
   for _, card in ipairs(cards) do
-    local id = card.base.id
-    if not by_rank[id] then by_rank[id] = {} end
-    by_rank[id][#by_rank[id] + 1] = card
+    if not (card.ability and card.ability.name == 'Stone Card') then
+      local id = card.base.id
+      if not by_rank[id] then by_rank[id] = {} end
+      by_rank[id][#by_rank[id] + 1] = card
+    end
   end
 
   -- Sort groups: largest first, highest rank breaks ties
@@ -662,10 +693,14 @@ local function get_scoring_cards(cards, hand_name)
       end
     end
   elseif hand_name == 'High Card' then
-    -- Only the highest-ranked card scores
+    -- Only the highest-ranked non-Stone card scores. Stones don't
+    -- participate in High Card selection (they'd get added below).
     local best = nil
     for _, card in ipairs(cards) do
-      if not best or card.base.id > best.base.id then best = card end
+      if not (card.ability and card.ability.name == 'Stone Card')
+        and (not best or card.base.id > best.base.id) then
+        best = card
+      end
     end
     if best then scoring_set[best] = true end
   else
@@ -1029,17 +1064,10 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
 
   -- With Four Fingers, Balatro may detect Straight Flush / Royal Flush
   -- when the flush subset and straight subset don't overlap (e.g. 4
-  -- suited cards + 1 off-suit card that completes the straight).  Reject
-  -- these so the individual Flush / Straight combos are recommended.
-  if hand_name == 'Straight Flush' or hand_name == 'Royal Flush' then
-    local flush_cards = get_flush_members(cards)
-    if #flush_cards < #cards then
-      local sub_name = G.FUNCS.get_poker_hand_info(flush_cards)
-      if sub_name ~= 'Straight Flush' and sub_name ~= 'Royal Flush' then
-        return nil, 0
-      end
-    end
-  end
+  -- suited cards + 1 off-suit card that completes the straight). The
+  -- in-game scorer still treats this as a Straight Flush, so we have
+  -- to score it faithfully — analyze_hand decides separately whether
+  -- to recommend the SF combo over Flush / Straight subsets.
 
   local hand_info = G.GAME.hands[hand_name]
   if not hand_info then return nil, 0 end
@@ -1146,9 +1174,14 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
         scoring_dollars = scoring_dollars + 3 * triggers
       end
       local hiker_accum = 0  -- accumulated perma_bonus from Hiker for this card
+      local is_stone = card.ability and card.ability.name == 'Stone Card'
       for trig = 1, triggers do
-        -- Base chip value from card rank (Stone Cards have nominal=0)
-        chips = chips + (card.base.nominal or 0)
+        -- Base chip value from card rank. Real Card:get_chip_bonus
+        -- (balatro_src/card.lua:976) returns ONLY bonus + perma_bonus
+        -- for Stone Cards — nominal is suppressed.
+        if not is_stone then
+          chips = chips + (card.base.nominal or 0)
+        end
 
         -- Card enhancement bonuses
         local ability = card.ability
@@ -1224,15 +1257,43 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- held-King check next hand, etc.).
   -------------------------------------------------
 
+  -- Jokers whose held-individual contribution is already covered by
+  -- the hardcoded fast paths above (Baron, Shoot the Moon) or whose
+  -- return is non-score (Mime returns repetitions only).
+  local held_individual_deny = {
+    ['Baron']          = true,
+    ['Shoot the Moon'] = true,
+    ['Mime']           = true,
+  }
+
+  -- Pre-scan for any joker that *might* fire in held-individual context
+  -- so we don't enter the trigger loop on cards no joker cares about.
+  local jokers_for_held = G.jokers and G.jokers.cards or {}
+  local has_held_individual_joker = false
+  for _, j in ipairs(jokers_for_held) do
+    if not j.debuff and j.ability and j.calculate_joker
+      and not held_individual_deny[j.ability.name or ''] then
+      has_held_individual_joker = true
+      break
+    end
+  end
+
   -- has_baron / baron_count / has_shoot_moon / shoot_moon_count are
   -- all read from `precomputed` — same reason Hiker is hoisted.
   local function apply_held_effects(card)
     if card.debuff then return end
     local is_steel = card.ability and card.ability.name == 'Steel Card'
-    local is_king = card.base.id == 13
-    local is_queen = card.base.id == 12
+    -- Stone Cards override Card:get_id to return a random negative
+    -- value, so Baron and Shoot the Moon (which test get_id == 13/12)
+    -- never fire on them in-game. The fast paths below compare
+    -- base.id, so exclude Stones explicitly.
+    local is_stone = card.ability and card.ability.name == 'Stone Card'
+    local is_king = not is_stone and card.base.id == 13
+    local is_queen = not is_stone and card.base.id == 12
     if not (is_steel or (has_baron and is_king)
-      or (has_shoot_moon and is_queen)) then return end
+      or (has_shoot_moon and is_queen) or has_held_individual_joker) then
+      return
+    end
     local triggers = get_triggers(card, 0, true, pareidolia, resolved)
     for _ = 1, triggers do
       -- Steel Card enhancement: x1.5 mult per trigger.
@@ -1250,6 +1311,34 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
       -- Shoot the Moon: +13 mult per held Queen, per instance
       if has_shoot_moon and is_queen then
         mult = mult + 13 * shoot_moon_count
+      end
+      -- Real-dispatch path for other held-individual jokers
+      -- (Raised Fist, future additions). Mirrors the per-joker call
+      -- in evaluate_play's held loop (state_events.lua:802) with
+      -- cardarea = G.hand, individual = true.
+      if has_held_individual_joker then
+        for _, joker in ipairs(jokers_for_held) do
+          local jname = joker.ability and joker.ability.name or ''
+          if not joker.debuff and joker.ability and joker.calculate_joker
+            and not held_individual_deny[jname] then
+            local saved = snapshot_ability(joker.ability)
+            local ok, effect = pcall(joker.calculate_joker, joker, {
+              individual   = true,
+              cardarea     = G.hand,
+              other_card   = card,
+              full_hand    = cards,
+              scoring_hand = scoring,
+              scoring_name = hand_name,
+              poker_hands  = poker_hands,
+            })
+            joker.ability = saved
+            if ok and type(effect) == 'table' then
+              if effect.h_mult then mult = mult + effect.h_mult end
+              if effect.mult   then mult = mult + effect.mult   end
+              if effect.x_mult then mult = mult * effect.x_mult end
+            end
+          end
+        end
       end
     end
   end
