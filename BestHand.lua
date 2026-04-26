@@ -1720,14 +1720,18 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- held-King check next hand, etc.).
   -------------------------------------------------
 
-  -- Jokers whose held-individual contribution is already covered by
-  -- the hardcoded fast paths above (Baron, Shoot the Moon), whose
-  -- return is non-score (Mime returns repetitions only), or whose
-  -- real dispatch has unrollable side effects (Reserved Parking
-  -- mutates G.GAME.dollar_buffer and queues an event).
+  -- Jokers we don't dispatch in the held-individual real path:
+  --   * Mime returns repetitions only (non-score); retriggers are
+  --     applied by get_triggers.
+  --   * Reserved Parking mutates G.GAME.dollar_buffer and queues an
+  --     event — unrollable side effects.
+  -- Baron and Shoot the Moon were here historically, paired with the
+  -- hardcoded fast paths below. They were moved to real dispatch so
+  -- they fire at their slot position, not before every other held
+  -- joker — without that, Raised Fist (slot N) followed by Baron
+  -- (slot N+M) was applying as mult * 1.5 + raised, instead of the
+  -- correct (mult + raised) * 1.5.
   local held_individual_deny = {
-    ['Baron']            = true,
-    ['Shoot the Moon']   = true,
     ['Mime']             = true,
     ['Reserved Parking'] = true,
   }
@@ -1793,31 +1797,26 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
     end
     local triggers = get_triggers(card, 0, true, pareidolia, resolved)
     for _ = 1, triggers do
-      -- Steel Card enhancement: x1.5 mult per trigger.
-      -- Card editions do NOT fire for held-in-hand effects;
-      -- they only fire in Phase 1 for scored cards.
+      -- Steel Card enhancement: x1.5 mult per trigger. Steel fires
+      -- from the card's own enhancement evaluation (before any joker
+      -- in slot order), so it stays as a hardcoded prelude rather
+      -- than going through real dispatch.
+      -- Card editions do NOT fire for held-in-hand effects; they
+      -- only fire in Phase 1 for scored cards.
       if is_steel then
         mult = mult * 1.5
       end
-      -- Baron: x1.5 mult per held King, per Baron instance
-      if has_baron and is_king then
-        for _ = 1, baron_count do
-          mult = mult * 1.5
-        end
-      end
-      -- Shoot the Moon: +13 mult per held Queen, per instance
-      if has_shoot_moon and is_queen then
-        mult = mult + 13 * shoot_moon_count
-      end
-      -- Real-dispatch path for other held-individual jokers
-      -- (Raised Fist, future additions). Mirrors the per-joker call
-      -- in evaluate_play's held loop (state_events.lua:802) with
+      -- Real-dispatch path for held-individual jokers in slot order:
+      -- Baron (x1.5 per held King), Shoot the Moon (+13 mult per held
+      -- Queen), Raised Fist (+2*nominal on its tracked card), plus
+      -- any future additions. Mirrors the per-joker call in
+      -- evaluate_play's held loop (state_events.lua:802) with
       -- cardarea = G.hand, individual = true.
       --
-      -- No snapshot: every non-deny vanilla joker reachable here
-      -- (Raised Fist) only reads self.ability and returns an effect
-      -- table. Reserved Parking is in held_individual_deny because
-      -- it mutates G.GAME.dollar_buffer and queues an event.
+      -- No snapshot: every non-deny vanilla joker reachable here only
+      -- reads self.ability and returns an effect table. Reserved
+      -- Parking is in held_individual_deny because it mutates
+      -- G.GAME.dollar_buffer and queues an event.
       if has_held_individual_joker then
         ctx_held.other_card = card
         for _, joker in ipairs(jokers_for_held) do
