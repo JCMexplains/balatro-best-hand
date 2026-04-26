@@ -407,6 +407,11 @@ end
 -- Hearts (and vice versa), and a Club card counts as Spades.
 -------------------------------------------------------------------------
 local function suit_matches(card, target_suit)
+  -- Stone Cards have no suit — vanilla Card:is_suit returns false for
+  -- them in both flush and non-flush branches. Without this check
+  -- get_flush_members would treat a Stone Card's underlying base.suit
+  -- as a flush member, picking the wrong suit and scoring set.
+  if card.ability and card.ability.effect == 'Stone Card' then return false end
   if card.ability and card.ability.name == 'Wild Card' then return true end
   if card.base.suit == target_suit then return true end
   if has_smeared_joker() then
@@ -449,7 +454,28 @@ end
 local function get_flush_members(cards)
   -- suit_matches already handles Smeared Joker (H+D and S+C merge)
   -- and Wild Card (matches every suit), so we just call it directly.
-  local suits = {'Hearts', 'Diamonds', 'Clubs', 'Spades'}
+  -- Iteration order and first-qualifying-wins tiebreak must match
+  -- vanilla get_flush (misc_functions.lua:get_flush) — with Four
+  -- Fingers + multiple Wilds, two suits can each hit count >= 4 and
+  -- pick different scoring sets. Mismatching the order chooses the
+  -- wrong members and chips.
+  local suits = {'Spades', 'Hearts', 'Clubs', 'Diamonds'}
+  local has_four_fingers = false
+  for _, j in ipairs(G.jokers and G.jokers.cards or {}) do
+    if not j.debuff and j.ability and j.ability.name == 'Four Fingers' then
+      has_four_fingers = true; break
+    end
+  end
+  local flush_min = has_four_fingers and 4 or 5
+  for _, suit in ipairs(suits) do
+    local matched = {}
+    for _, card in ipairs(cards) do
+      if suit_matches(card, suit) then matched[#matched + 1] = card end
+    end
+    if #matched >= flush_min then return matched end
+  end
+  -- No qualifying flush — caller is responsible for not asking, but
+  -- return the most-populous suit's members as a safe fallback.
   local best_suit, best_count = nil, 0
   for _, suit in ipairs(suits) do
     local count = 0
@@ -480,8 +506,20 @@ local function get_straight_members(cards)
   -- output matches evaluate_poker_hand's scoring_hand for Straight
   -- exactly. If get_straight isn't loaded (standalone analyzer mode),
   -- fall back to the subset-detection below.
+  -- SMODS replaces vanilla `get_straight(hand)` with a 4-arg version
+  -- `get_straight(hand, min_length, skip, wrap)` whose min_length defaults
+  -- to 5 — passing only `cards` would miss every Four Fingers straight
+  -- and fall through to the get_poker_hand_info branch below, which
+  -- returns ALL `cards` (including the gap kicker) for a Four Fingers
+  -- 4-of-5 straight. Match the call shape SMODS uses internally so the
+  -- min_length / Shortcut / wrap-around args are honoured live.
+  -- The offline harness loads vanilla `get_straight(hand)`, which simply
+  -- ignores the trailing args, so this works in both contexts.
   if get_straight then
-    local s = get_straight(cards)
+    local s = get_straight(cards,
+      SMODS.four_fingers and SMODS.four_fingers('straight'),
+      SMODS.shortcut and SMODS.shortcut(),
+      SMODS.wrap_around_straight and SMODS.wrap_around_straight())
     if s and s[1] then return s[1] end
   end
   local full_name = G.FUNCS.get_poker_hand_info(cards)
@@ -859,6 +897,19 @@ end
 -- Returns cards in their original hand order (left to right).
 -------------------------------------------------------------------------
 local function get_scoring_cards(cards, hand_name)
+  -- Splash joker: every played card scores regardless of hand type,
+  -- including the off-suit kicker in a Four-Fingers flush. Must run
+  -- before the Flush/Straight branch — that branch returns early and
+  -- would otherwise drop the kicker from the scoring set.
+  if G.jokers and G.jokers.cards then
+    for _, joker in ipairs(G.jokers.cards) do
+      if not joker.debuff and joker.ability
+        and joker.ability.name == 'Splash' then
+        return cards
+      end
+    end
+  end
+
   -- Hands where every played card always participates
   if hand_name == 'Full House' or hand_name == 'Flush House'
     or hand_name == 'Flush Five' or hand_name == 'Five of a Kind' then
@@ -905,16 +956,6 @@ local function get_scoring_cards(cards, hand_name)
       if scoring_set[c] then result[#result + 1] = c end
     end
     return result
-  end
-
-  -- Splash joker: all played cards score regardless of hand type
-  if G.jokers and G.jokers.cards then
-    for _, joker in ipairs(G.jokers.cards) do
-      if not joker.debuff and joker.ability
-        and joker.ability.name == 'Splash' then
-        return cards
-      end
-    end
   end
 
   -- Group cards by rank id to identify the hand's core groups.
