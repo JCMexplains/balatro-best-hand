@@ -233,7 +233,8 @@ do
   local f = assert(io.open('BestHand.lua', 'r'))
   local src = f:read('*a')
   f:close()
-  src = src .. '\n_G._BH = { score_combo = score_combo }\n'
+  src = src .. '\n_G._BH = { score_combo = score_combo,'
+            .. ' clear_smeared_cache = clear_smeared_cache }\n'
   local chunk = assert(loadstring(src, 'BestHand'))
   chunk()
   assert(_BH and _BH.score_combo, 'score_combo export failed')
@@ -447,6 +448,12 @@ local function score_fixture(fx)
   local all = {}
   for _, c in ipairs(played) do all[#all+1] = c end
   for _, c in ipairs(held)   do all[#all+1] = c end
+
+  -- with_no_resolve clears the Smeared Joker cache in-game; we bypass
+  -- that wrapper, so clear here to keep cache state from leaking
+  -- across fixtures (a non-Smeared fixture inheriting `true` would
+  -- over-score, vice versa).
+  if _BH.clear_smeared_cache then _BH.clear_smeared_cache() end
 
   local _, ev_score, _, _, n_prob, range_events =
     _BH.score_combo(played, all, nil, nil)

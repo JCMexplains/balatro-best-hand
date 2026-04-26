@@ -494,7 +494,8 @@ function H.load_besthand(path)
   local f = assert(io.open(path, 'r'))
   local src = f:read('*a')
   f:close()
-  src = src .. '\n_G._BH = { score_combo = score_combo }\n'
+  src = src .. '\n_G._BH = { score_combo = score_combo,'
+            .. ' clear_smeared_cache = clear_smeared_cache }\n'
   local chunk = assert(loadstring(src, 'BestHand'))
   chunk()
   assert(_BH and _BH.score_combo, 'score_combo export failed')
@@ -512,6 +513,12 @@ function H.mod_score(fx, opts)
   local all = {}
   for _, c in ipairs(played) do all[#all+1] = c end
   for _, c in ipairs(held)   do all[#all+1] = c end
+
+  -- score_combo's caller in-game (analyze_hand) clears the Smeared
+  -- Joker cache via with_no_resolve. We bypass that wrapper, so clear
+  -- here — otherwise the cache leaks across fixtures and a fixture's
+  -- Smeared logic depends on the prior fixture's joker set.
+  if _BH.clear_smeared_cache then _BH.clear_smeared_cache() end
 
   local _, ev_score, _, _, n_prob, range_events =
     _BH.score_combo(played, all, nil, nil)
