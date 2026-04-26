@@ -1,6 +1,12 @@
 -- synth_fuzz.lua — generate random fixtures and write any mod/oracle
 -- disagreement to best_hand_captures/ in the same format F4 emits.
 --
+-- Biased toward "lots of interaction" setups: 5 played + held cards,
+-- 4-5 jokers, high enhancement/edition/seal rate, retrigger-heavy
+-- joker pool, straight-flush / four-of-a-kind / full-house biased
+-- hands. Most fixtures hit a real poker-hand bonus and many jokers
+-- fire per fixture.
+--
 -- The oracle is Balatro's real G.FUNCS.evaluate_play. The mod is
 -- BestHand's score_combo. We avoid probabilistic effects entirely
 -- (no Lucky/Glass cards, no jokers that call pseudorandom in their
@@ -8,14 +14,14 @@
 -- and any disagreement is a real mod bug.
 --
 -- Usage: lua synth_fuzz.lua [N] [out_dir]
---   N        number of fixtures to try (default 200)
+--   N        number of fixtures to try (default 10000)
 --   out_dir  miss capture directory (default best_hand_captures)
 
 local H = dofile('harness.lua')
 H.load_besthand()
 H.enable_oracle()
 
-local N        = tonumber(arg[1]) or 200
+local N        = tonumber(arg[1]) or 10000
 local OUT_DIR  = arg[2] or 'best_hand_captures'
 
 if not OUT_DIR:match('^[%w%-._ :/\\]+$') then
@@ -29,41 +35,43 @@ math.randomseed(seed)
 print(string.format('synth_fuzz: seed=%d  N=%d  out=%s', seed, N, OUT_DIR))
 
 -------------------------------------------------------------------------
--- Generation knobs.
+-- Joker pool — partitioned so we can guarantee every fixture has at
+-- least one "interaction" joker (retriggers, held-card readers,
+-- order-sensitive, or per-card readers). Deterministic scoring jokers
+-- only — nothing on BestHand's per_card_deny / before_deny /
+-- joker_main_deny.
 -------------------------------------------------------------------------
--- Curated safe-joker list. Deterministic scoring jokers only —
--- nothing on BestHand's per_card_deny / before_deny / joker_main_deny.
-local SAFE_JOKERS = {
+local INTERACTION_JOKERS = {
+  -- Retriggers / per-card readers
+  'Sock and Buskin', 'Hanging Chad', 'Mime', 'Hack', 'Dusk', 'Seltzer',
+  'Photograph', 'Smiley Face', 'Scholar',
+  'Fibonacci', 'Even Steven', 'Odd Todd',
+  -- Held-card readers
+  'Raised Fist', 'Baron', 'Shoot the Moon',
+  -- Order-sensitive (first/last)
+  'Triboulet',
+  -- xMult on hand-type
+  'The Duo', 'The Trio', 'The Family', 'The Order', 'The Tribe',
+}
+
+local FILLER_JOKERS = {
   'Joker', 'Greedy Joker', 'Lusty Joker', 'Wrathful Joker', 'Gluttonous Joker',
   'Jolly Joker', 'Zany Joker', 'Mad Joker', 'Crazy Joker', 'Droll Joker',
   'Sly Joker', 'Wily Joker', 'Clever Joker', 'Devious Joker', 'Crafty Joker',
   'Half Joker', 'Banner', 'Mystic Summit',
-  'Fibonacci', 'Even Steven', 'Odd Todd', 'Scholar',
-  'Photograph', 'Hanging Chad', 'Sock and Buskin', 'Mime', 'Hack', 'Dusk', 'Seltzer',
-  'Smiley Face', 'Pareidolia', 'Smeared Joker', 'Four Fingers', 'Splash',
-  'Scary Face', 'Abstract Joker', 'Walkie Talkie', 'Triboulet',
-  'Raised Fist', 'Baron', 'Shoot the Moon',
-  'The Duo', 'The Trio', 'The Family', 'The Order', 'The Tribe',
-  'Crazy Joker', 'Stone Joker', 'Steel Joker', 'Driver\'s License',
+  'Pareidolia', 'Smeared Joker', 'Four Fingers', 'Splash',
+  'Scary Face', 'Abstract Joker', 'Walkie Talkie',
+  'Stone Joker', 'Steel Joker', 'Driver\'s License',
   'Bull', 'Onyx Agate', 'Arrowhead', 'Stuntman',
   'Flower Pot', 'Blackboard', 'Acrobat', 'Swashbuckler',
-  'Cavendish', 'Gros Michel', 'Misprint',  -- Misprint generates a fixed range; mod handles via range_config
+  'Cavendish', 'Gros Michel',
 }
-
--- Drop Misprint until the batch_verify range_config plumb is verified;
--- it's the one prob-ish joker on the curated list. Keep things strict.
-local function strip(t, name)
-  local out = {}
-  for _, v in ipairs(t) do if v ~= name then out[#out+1] = v end end
-  return out
-end
-SAFE_JOKERS = strip(SAFE_JOKERS, 'Misprint')
 
 -- Deterministic enhancements only. No Lucky (RNG mult), no Glass (RNG
 -- shatter destroys cards mid-scoring), no Gold (end-of-round dollars).
-local SAFE_ENHANCEMENTS = { nil, 'Bonus', 'Mult', 'Wild Card', 'Stone Card', 'Steel Card' }
-local EDITIONS          = { nil, 'foil', 'holo', 'polychrome' }
-local SEALS             = { nil, 'Red', 'Blue', 'Purple' }  -- Gold seal = end-of-round dollars; skip
+local SAFE_ENHANCEMENTS = { 'Bonus', 'Mult', 'Wild Card', 'Stone Card', 'Steel Card' }
+local EDITIONS          = { 'foil', 'holo', 'polychrome' }
+local SEALS             = { 'Red', 'Blue', 'Purple' }  -- Gold seal = end-of-round dollars; skip
 
 local SUITS = { 'Diamonds', 'Clubs', 'Hearts', 'Spades' }
 local RANKS = {
@@ -98,11 +106,14 @@ local BASE_HANDS = {
   ['Flush Five']        = { chips = 160, mult = 16, l_chips = 50, l_mult = 3, level = 1, played = 0, played_this_round = 0, visible = false, s_chips = 160, s_mult = 16 },
 }
 
--------------------------------------------------------------------------
--- Random helpers.
--------------------------------------------------------------------------
 local function pick(t) return t[math.random(#t)] end
 local function maybe(p) return math.random() < p end
+
+-- High enhancement/edition/seal rates so cards light up multiple
+-- per-card joker triggers per fixture.
+local P_ENHANCE = 0.55
+local P_EDITION = 0.40
+local P_SEAL    = 0.40
 
 local function gen_card(opts)
   opts = opts or {}
@@ -112,99 +123,117 @@ local function gen_card(opts)
     ability = { name = 'Default Base', perma_bonus = 0 },
     base    = { id = rank.id, nominal = rank.nominal, suit = suit, value = rank.value },
   }
-  -- Enhancement (overrides ability.name)
-  if opts.allow_enhancements ~= false and maybe(0.20) then
-    local enh = pick(SAFE_ENHANCEMENTS)
-    if enh then card.ability.name = enh end
+  if opts.allow_enhancements ~= false and maybe(P_ENHANCE) then
+    card.ability.name = pick(SAFE_ENHANCEMENTS)
   end
-  -- Edition
-  if maybe(0.15) then
+  if maybe(P_EDITION) then
     local ed = pick(EDITIONS)
-    if ed then card.edition = { [ed] = true, type = ed } end
+    card.edition = { [ed] = true, type = ed }
   end
-  -- Seal
-  if maybe(0.15) then
-    local s = pick(SEALS)
-    if s then card.seal = s end
+  if maybe(P_SEAL) then
+    card.seal = pick(SEALS)
   end
   return card
 end
 
--- Build a hand that's likely to make a recognized poker hand. Mix of:
---   * bare random (often High Card)
---   * forced pair/two-pair/three-of-a-kind (repeat ranks)
---   * forced flush (single suit)
---   * forced straight (consecutive ranks)
+-- Always generate a 5-card played hand. Bias toward straight-flush /
+-- four-of-a-kind / full-house / two-pair / flush + straight so most
+-- fixtures hit a real poker-hand bonus and many jokers fire.
 local function gen_played()
-  local mode = math.random(6)
-  local n = math.random(1, 5)
+  local mode = math.random(7)
   local cards = {}
-  if mode == 1 then  -- random
-    for i = 1, n do cards[i] = gen_card() end
-  elseif mode == 2 then  -- pair
-    n = math.max(n, 2)
+  if mode == 1 then  -- straight flush (5 consecutive same suit)
+    local s = pick(SUITS)
+    local lo = math.random(1, #RANKS - 4)
+    for i = 1, 5 do cards[i] = gen_card{rank = RANKS[lo + i - 1], suit = s} end
+  elseif mode == 2 then  -- four of a kind + kicker
     local r = pick(RANKS)
-    cards[1] = gen_card{rank = r}
-    cards[2] = gen_card{rank = r}
-    for i = 3, n do cards[i] = gen_card() end
-  elseif mode == 3 then  -- three of a kind
-    n = math.max(n, 3)
-    local r = pick(RANKS)
-    for i = 1, 3 do cards[i] = gen_card{rank = r} end
-    for i = 4, n do cards[i] = gen_card() end
-  elseif mode == 4 then  -- flush (5 cards same suit)
-    n = 5
+    for i = 1, 4 do cards[i] = gen_card{rank = r} end
+    cards[5] = gen_card()
+  elseif mode == 3 then  -- full house (3 + 2)
+    local r1, r2 = pick(RANKS), pick(RANKS)
+    while r2.id == r1.id do r2 = pick(RANKS) end
+    for i = 1, 3 do cards[i] = gen_card{rank = r1} end
+    for i = 4, 5 do cards[i] = gen_card{rank = r2} end
+  elseif mode == 4 then  -- flush
     local s = pick(SUITS)
     for i = 1, 5 do cards[i] = gen_card{suit = s} end
-  elseif mode == 5 then  -- straight (5 consecutive)
-    n = 5
+  elseif mode == 5 then  -- straight (mixed suits)
     local lo = math.random(1, #RANKS - 4)
     for i = 1, 5 do cards[i] = gen_card{rank = RANKS[lo + i - 1]} end
-  else  -- two pair
-    n = math.max(n, 4)
+  elseif mode == 6 then  -- two pair + kicker
     local r1, r2 = pick(RANKS), pick(RANKS)
+    while r2.id == r1.id do r2 = pick(RANKS) end
     cards[1] = gen_card{rank = r1}; cards[2] = gen_card{rank = r1}
     cards[3] = gen_card{rank = r2}; cards[4] = gen_card{rank = r2}
-    for i = 5, n do cards[i] = gen_card() end
+    cards[5] = gen_card()
+  else  -- random — exercises high card / unusual mixes
+    for i = 1, 5 do cards[i] = gen_card() end
+  end
+  -- Shuffle so card order is non-trivial — exercises permutation logic
+  -- and the F2 ordering search.
+  for i = #cards, 2, -1 do
+    local j = math.random(i)
+    cards[i], cards[j] = cards[j], cards[i]
   end
   return cards
 end
 
 local function gen_held()
-  local n = math.random(0, 3)
+  local n = math.random(2, 4)
   local cards = {}
   for i = 1, n do cards[i] = gen_card() end
   return cards
 end
 
 local function gen_jokers()
-  local n = math.random(0, 3)
+  local n = math.random(4, 5)
   local out = {}
-  -- Sample without replacement so we don't get duplicates that can
-  -- chain in surprising ways (Showman aside, but Showman isn't on the list).
-  local pool = {}
-  for _, name in ipairs(SAFE_JOKERS) do pool[#pool+1] = name end
-  for i = 1, n do
-    if #pool == 0 then break end
-    local idx = math.random(#pool)
-    out[i] = {
-      ability = { name = pool[idx], perma_bonus = 0,
+
+  -- Sample from interaction pool (without replacement), then top up with
+  -- filler. Guarantees at least 2 interaction jokers per fixture.
+  local interaction_pool = {}
+  for _, name in ipairs(INTERACTION_JOKERS) do interaction_pool[#interaction_pool+1] = name end
+  local filler_pool = {}
+  for _, name in ipairs(FILLER_JOKERS) do filler_pool[#filler_pool+1] = name end
+
+  local n_inter = math.min(n, math.random(2, 4))
+  for i = 1, n_inter do
+    if #interaction_pool == 0 then break end
+    local idx = math.random(#interaction_pool)
+    out[#out+1] = {
+      ability = { name = interaction_pool[idx], perma_bonus = 0,
                   mult = 0, t_chips = 0, t_mult = 0, x_mult = 1 },
       rarity  = 1,
     }
-    if maybe(0.10) then
-      local ed = pick({ 'foil', 'holo', 'polychrome' })
-      out[i].edition = { [ed] = true, type = ed }
-    end
-    table.remove(pool, idx)
+    table.remove(interaction_pool, idx)
   end
-  return out
-end
+  for i = #out + 1, n do
+    if #filler_pool == 0 then break end
+    local idx = math.random(#filler_pool)
+    out[#out+1] = {
+      ability = { name = filler_pool[idx], perma_bonus = 0,
+                  mult = 0, t_chips = 0, t_mult = 0, x_mult = 1 },
+      rarity  = 1,
+    }
+    table.remove(filler_pool, idx)
+  end
 
-local function deepcopy(v)
-  if type(v) ~= 'table' then return v end
-  local out = {}
-  for k, vv in pairs(v) do out[k] = deepcopy(vv) end
+  -- High edition rate on jokers — exercises foil/holo/polychrome
+  -- arithmetic during joker_main.
+  for _, j in ipairs(out) do
+    if maybe(0.30) then
+      local ed = pick(EDITIONS)
+      j.edition = { [ed] = true, type = ed }
+    end
+  end
+
+  -- Shuffle so joker slot order varies (slot order matters for L→R
+  -- per-card and joker_main passes).
+  for i = #out, 2, -1 do
+    local j = math.random(i)
+    out[i], out[j] = out[j], out[i]
+  end
   return out
 end
 
@@ -243,9 +272,8 @@ local function gen_fixture()
 end
 
 -------------------------------------------------------------------------
--- Hand-name detection — we install the fixture (via mod_score path) so
--- the played cards have Card metatables, then call the real
--- get_poker_hand_info.
+-- Hand-name detection — install the fixture so the played cards have
+-- Card metatables, then call the real get_poker_hand_info.
 -------------------------------------------------------------------------
 local function detect_hand_name(fx)
   H.install_fixture(fx)
@@ -274,10 +302,13 @@ local first_err_msg
 local out_index = 0
 local timestamp_run = os.date('%Y%m%d_%H%M%S')
 
+-- Track distinct (mod-oracle, hand_name, joker_set) signatures so we
+-- don't drown in dupes if one bug triggers thousands of times.
+local seen_sigs = {}
+
 for i = 1, N do
   local fx = gen_fixture()
 
-  -- Score with mod first (deterministic only — no probabilistic enum).
   local ok_m, mod_pred = pcall(function() return (H.mod_score(fx)) end)
   local oracle, oerr   = H.oracle_score(fx)
 
@@ -290,34 +321,59 @@ for i = 1, N do
     n_ok = n_ok + 1
   else
     n_miss = n_miss + 1
-    -- Detect the hand name on a fresh install (mod_score / oracle_score
-    -- have already mutated state via deepcopy-attached cards, but the
-    -- fixture itself is intact).
-    fx.hand_name       = detect_hand_name(fx)
-    fx.predicted_score = mod_pred
-    fx.actual_score    = oracle
-    fx.mod_version     = mod_version
-    out_index = out_index + 1
-    local fname = string.format('synth_%s_%03d.lua', timestamp_run, out_index)
-    local path  = OUT_DIR .. '/' .. fname
-    local f, oerr2 = io.open(path, 'w')
-    if not f then
-      io.stderr:write('write fail: ' .. tostring(oerr2) .. '\n')
+
+    -- Build a signature: hand_name + sorted joker names + mod/oracle delta.
+    fx.hand_name = detect_hand_name(fx)
+    local jnames = {}
+    for _, j in ipairs(fx.jokers) do jnames[#jnames+1] = j.ability.name end
+    table.sort(jnames)
+    local sig = fx.hand_name .. '|' .. table.concat(jnames, ',') ..
+                '|' .. tostring(mod_pred - oracle)
+
+    if not seen_sigs[sig] then
+      seen_sigs[sig] = 1
+      fx.predicted_score = mod_pred
+      fx.actual_score    = oracle
+      fx.mod_version     = mod_version
+      out_index = out_index + 1
+      local fname = string.format('synth_%s_%04d.lua', timestamp_run, out_index)
+      local path  = OUT_DIR .. '/' .. fname
+      local f, oerr2 = io.open(path, 'w')
+      if not f then
+        io.stderr:write('write fail: ' .. tostring(oerr2) .. '\n')
+      else
+        f:write(H.serialize_capture(fx))
+        f:close()
+        print(string.format('  MISS  %s  hand=%-16s  mod=%-12s  oracle=%-12s  jokers=%s',
+          fname, fx.hand_name, tostring(mod_pred), tostring(oracle), table.concat(jnames, ',')))
+      end
     else
-      f:write(H.serialize_capture(fx))
-      f:close()
-      print(string.format('  MISS  %s  hand=%-16s  mod=%-12s  oracle=%s',
-        fname, fx.hand_name, tostring(mod_pred), tostring(oracle)))
+      seen_sigs[sig] = seen_sigs[sig] + 1
     end
   end
 
-  if i % 50 == 0 then
-    io.write(string.format('[%d/%d] ok=%d miss=%d err=%d\n', i, N, n_ok, n_miss, n_err))
+  if i % 500 == 0 then
+    io.write(string.format('[%d/%d] ok=%d miss=%d uniq_miss=%d err=%d\n',
+      i, N, n_ok, n_miss, out_index, n_err))
     io.flush()
   end
 end
 
 print()
-print(string.format('synth_fuzz done: tried=%d  ok=%d  miss=%d  err=%d', N, n_ok, n_miss, n_err))
+print(string.format('synth_fuzz done: tried=%d  ok=%d  miss=%d  uniq=%d  err=%d',
+  N, n_ok, n_miss, out_index, n_err))
 if first_err_msg then print('  first err: ' .. first_err_msg) end
+
+-- Print top-N most frequent miss signatures, descending.
+if n_miss > 0 then
+  local sigs = {}
+  for s, c in pairs(seen_sigs) do sigs[#sigs+1] = { s = s, c = c } end
+  table.sort(sigs, function(a, b) return a.c > b.c end)
+  print()
+  print('Top miss signatures (count | hand | jokers | delta):')
+  for i = 1, math.min(20, #sigs) do
+    print(string.format('  %4d  %s', sigs[i].c, sigs[i].s))
+  end
+end
+
 print(string.format('  misses written to %s/synth_%s_*.lua', OUT_DIR, timestamp_run))
