@@ -890,6 +890,56 @@ local function is_hand_debuffed_by_blind(hand_name)
 end
 
 -------------------------------------------------------------------------
+-- Build a one-line description of any active hand-zeroing blind, so F2
+-- can explain why some (or all) suggestions are missing. Returns nil
+-- when no such blind is active. Mirrors is_hand_debuffed_by_blind and
+-- the Psychic check in score_combo so the messaging stays in sync.
+-------------------------------------------------------------------------
+local function describe_blind_restriction(n_cards)
+  if not G.GAME or not G.GAME.blind or G.GAME.blind.disabled then
+    return nil
+  end
+  local bname = G.GAME.blind.name
+  local hands = G.GAME.hands or {}
+  if bname == 'The Mouth' then
+    local allowed
+    for name, info in pairs(hands) do
+      if (info.played_this_round or 0) > 0 then
+        allowed = name
+        break
+      end
+    end
+    if allowed then
+      return string.format(
+        'The Mouth: only %s scores this round (already played).', allowed)
+    end
+    return 'The Mouth: only the first hand type you play this round will score.'
+  elseif bname == 'The Eye' then
+    local played = {}
+    for name, info in pairs(hands) do
+      if (info.played_this_round or 0) > 0 then
+        played[#played + 1] = name
+      end
+    end
+    table.sort(played)
+    if #played > 0 then
+      return string.format(
+        'The Eye: each hand type scores once per round. Already played: %s.',
+        table.concat(played, ', '))
+    end
+    return 'The Eye: each hand type can only score once this round.'
+  elseif bname == 'The Psychic' then
+    if n_cards and n_cards < 5 then
+      return string.format(
+        'The Psychic: must play exactly 5 cards to score (only %d in hand).',
+        n_cards)
+    end
+    return 'The Psychic: must play exactly 5 cards to score.'
+  end
+  return nil
+end
+
+-------------------------------------------------------------------------
 -- Determine which cards actually score for a given hand type.
 -- Kicker cards (e.g. the 5th card in Two Pair) do NOT score,
 -- UNLESS they have Stone Card enhancement (Stone Cards always score).
@@ -2488,8 +2538,28 @@ SMODS.Keybind({
         stats and stats.perm_branches or 0,
         stats and stats.perms or 0))
     end
-    if not results or #results == 0 then return end
+    local n_in_hand = (G and G.hand and G.hand.cards) and #G.hand.cards or 0
+    local blind_msg = describe_blind_restriction(n_in_hand)
+    if not results or #results == 0 then
+      -- Empty results usually means the active blind zeroes every combo
+      -- (The Mouth locking out a hand type the user can't form, The Eye
+      -- after every reachable type has been played, The Psychic with
+      -- fewer than 5 cards). Stay silent only when there's no such
+      -- restriction — otherwise explain why no play is recommended.
+      if blind_msg then
+        print('')
+        print('')
+        print('-- Best Hands --')
+        print('No scoring play available. ' .. blind_msg)
+        print('')
+        print('')
+      end
+      return
+    end
     local lines = {'', '', '-- Best Hands --'}
+    if blind_msg then
+      lines[#lines + 1] = '(' .. blind_msg .. ')'
+    end
     -- Note when Splash makes all played cards score
     if G.jokers and G.jokers.cards then
       for _, joker in ipairs(G.jokers.cards) do
