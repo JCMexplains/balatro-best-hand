@@ -1273,9 +1273,23 @@ local function edition_additive(edition, chips, mult)
   return chips, mult
 end
 
+-- Apply an x_mult step the way SMODS does: mult + mult*(x-1) instead of
+-- mult*x. Mathematically equivalent for exact reals, but float
+-- arithmetic diverges when x has accumulated drift. Concrete case: Ramen
+-- subtracts 0.01 from x_mult per discard, so after 20 discards x_mult is
+-- 1.7999999999999998 (one ULP below 1.8). 175*1.7999999999999998 floors
+-- to 56699 across 180 chips; 175 + 175*0.7999999999999998 lands on 315.0
+-- exactly, matching the live game (56700). SMODS's
+-- scoring_calculation.toml replaces vanilla scoring entirely, routing
+-- every x_mult through Scoring_Parameters.mult:modify(mult*(amount-1))
+-- (smods/src/game_object.lua:3881), so we mirror that form everywhere.
+local function apply_xmult(mult, x)
+  return mult + mult * (x - 1)
+end
+
 local function edition_multiplicative(edition, chips, mult)
   if edition and edition.polychrome then
-    mult = mult * 1.5
+    mult = apply_xmult(mult, 1.5)
   end
   return chips, mult
 end
@@ -1356,7 +1370,7 @@ local function eval_per_card_jokers(
       if effect then
         chips = chips + (effect.chips or 0)
         mult  = mult  + (effect.mult or 0)
-        if effect.x_mult then mult = mult * effect.x_mult end
+        if effect.x_mult then mult = apply_xmult(mult, effect.x_mult) end
       else
         -- Hardcoded fallback: only Bloodstone contributes here. Other
         -- deny-listed jokers (8 Ball, Business Card, Golden Ticket,
@@ -1368,10 +1382,10 @@ local function eval_per_card_jokers(
             state.prob_idx = state.prob_idx + 1
             if state.prob_config then
               if state.prob_config[state.prob_idx] then
-                mult = mult * 1.5
+                mult = apply_xmult(mult, 1.5)
               end
             else
-              mult = mult * 1.25
+              mult = apply_xmult(mult, 1.25)
               state.used_ev = true
             end
           end
@@ -1675,7 +1689,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
           elseif ename == 'Mult' then
             mult = mult + 4
           elseif ename == 'Glass Card' then
-            mult = mult * 2
+            mult = apply_xmult(mult, 2)
           elseif ename == 'Stone Card' then
             chips = chips + 50
           elseif ename == 'Lucky Card' then
@@ -1854,7 +1868,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
       -- Card editions do NOT fire for held-in-hand effects; they
       -- only fire in Phase 1 for scored cards.
       if is_steel then
-        mult = mult * 1.5
+        mult = apply_xmult(mult, 1.5)
       end
       -- Real-dispatch path for held-individual jokers in slot order:
       -- Baron (x1.5 per held King), Shoot the Moon (+13 mult per held
@@ -1881,7 +1895,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
             if ok and type(effect) == 'table' then
               if effect.h_mult then mult = mult + effect.h_mult end
               if effect.mult   then mult = mult + effect.mult   end
-              if effect.x_mult then mult = mult * effect.x_mult end
+              if effect.x_mult then mult = apply_xmult(mult, effect.x_mult) end
             end
           end
         end
@@ -2041,7 +2055,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
       if effect then
         chips = chips + (effect.chip_mod or 0)
         mult  = mult  + (effect.mult_mod or 0)
-        if effect.Xmult_mod then mult = mult * effect.Xmult_mod end
+        if effect.Xmult_mod then mult = apply_xmult(mult, effect.Xmult_mod) end
       else
         -- Fallback for deny-listed / joker_main-nil jokers.
         -- eval_flat_jokers handles Misprint's range enumeration;
@@ -2069,7 +2083,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
         or (joker.config and joker.config.center
           and joker.config.center.rarity)
       if has_baseball_card and rarity == 2 then
-        mult = mult * 1.5
+        mult = apply_xmult(mult, 1.5)
       end
 
       ---------------------------------------------------------
