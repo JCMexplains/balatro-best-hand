@@ -1204,6 +1204,10 @@ local function build_combo_precomputed(resolved)
   local has_smeared = false
   local has_four_fingers = false
   local has_shortcut = false
+  -- Midas Mask is in before_deny because its context.before mutates
+  -- scoring_hand cards' ability via set_ability — unrollable. We
+  -- simulate the conversion in score_combo's enhancement read.
+  local has_midas_mask = false
   for _, j in ipairs(resolved) do
     local n = j.name
     if n == 'Pareidolia' then
@@ -1226,6 +1230,8 @@ local function build_combo_precomputed(resolved)
       has_four_fingers = true
     elseif n == 'Shortcut' then
       has_shortcut = true
+    elseif n == 'Midas Mask' then
+      has_midas_mask = true
     end
     if has_before_branch[n] then run_before = true end
     if has_individual_branch[n] then
@@ -1248,6 +1254,7 @@ local function build_combo_precomputed(resolved)
     has_smeared         = has_smeared,
     has_four_fingers    = has_four_fingers,
     has_shortcut        = has_shortcut,
+    has_midas_mask      = has_midas_mask,
   }
 end
 
@@ -1586,6 +1593,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   local run_before          = precomputed.run_before
   local run_individual      = precomputed.run_individual
   local enter_per_card_loop = precomputed.enter_per_card_loop
+  local has_midas_mask      = precomputed.has_midas_mask
 
   -- context.before pre-pass: scaling jokers bump their ability.* here.
   -- Must be restored before return so the next combo iteration sees
@@ -1666,7 +1674,19 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
         scoring_dollars = scoring_dollars + 3 * triggers
       end
       local hiker_accum = 0  -- accumulated perma_bonus from Hiker for this card
+      -- Midas Mask (vanilla card.lua:3869) converts every face card in
+      -- scoring_hand to Gold via set_ability(m_gold) during context.before.
+      -- set_ability rebuilds ability with the Gold center's defaults
+      -- (no chip/mult bonus) but PRESERVES perma_bonus, edition, and
+      -- seal. We can't roll that mutation back during analyze_hand, so
+      -- we simulate it here: skip the enhancement chip/mult branch for
+      -- face cards when Midas Mask is present, and treat them as
+      -- non-Stone (Gold restores nominal). is_face is Pareidolia-aware.
+      local card_id = card.base and card.base.id
+      local midas_gold = has_midas_mask and (pareidolia
+        or card_id == 11 or card_id == 12 or card_id == 13)
       local is_stone = card.ability and card.ability.name == 'Stone Card'
+        and not midas_gold
       for trig = 1, triggers do
         -- Base chip value from card rank. Real Card:get_chip_bonus
         -- (balatro_src/card.lua:976) returns ONLY bonus + perma_bonus
@@ -1684,7 +1704,9 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
           -- "Bonus", "Mult" — but "Glass Card", "Steel Card",
           -- "Lucky Card" etc. DO carry the suffix. Inconsistent
           -- naming in the game data.
-          if ename == 'Bonus' then
+          if midas_gold then
+            -- Enhancement gone (now Gold); no chip/mult contribution.
+          elseif ename == 'Bonus' then
             chips = chips + 30
           elseif ename == 'Mult' then
             mult = mult + 4
