@@ -16,7 +16,7 @@ There is no build step — Balatro loads `BestHand.lua` directly. The relevant c
 
 - **Syntax check**: `luac -p BestHand.lua` (Lua 5.1, no execution). Run after every edit; the cheapest way to catch parse errors before launching the game.
 - **Replay all captures through the mod**: `lua batch_verify.lua [captures_dir]` — defaults to `./best_hand_captures`. Reports `ok` / `ok(var)` / `MISS` per fixture.
-- **Investigate a single miss**: `lua trace_one.lua path/to/capture.lua`. `BH_DEBUG=1 lua trace_one.lua ...` enables per-joker Phase-3 tracing.
+- **Investigate a single miss**: `lua trace_one.lua path/to/capture.lua`.
 - **Fuzz mod vs real game**: `lua synth_fuzz.lua [N] [out_dir]` generates `N` random deterministic fixtures biased toward dense interaction (5-card hands, 4-5 jokers with at least 2 from the retrigger / held-reader / order-sensitive pool, ~55% enhancement / 40% edition / 40% seal rate, hand types weighted toward straight-flush / four-of-a-kind / full-house). No probabilistic effects, so disagreements with Balatro's real `G.FUNCS.evaluate_play` are real mod bugs. Misses are deduped by `(hand_name, joker_set, delta)` signature and written to `out_dir/synth_<ts>_NNNN.lua` in the F4 capture format. `FUZZ_SEED=<int>` for reproducible runs. Defaults: `N=10000`, `out_dir=best_hand_captures`.
 
 All offline tools require `balatro_src/` (a local extraction of Balatro's Lua source — gitignored, not shipped). Without it the harness can't load `card.lua` and the tools fail at startup.

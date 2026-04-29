@@ -3,8 +3,6 @@
 -- the same shim that batch_verify uses — loads balatro_src/card.lua
 -- and attaches the Card metatable so dispatch goes through the real
 -- Card:calculate_joker. Use to investigate a specific miss.
---
--- Set BH_DEBUG=1 for a per-joker Phase-3 trace.
 
 local capture_path = arg[1]
 if not capture_path then
@@ -390,5 +388,4 @@ if total == fx.actual_score then
   print('MATCH')
 else
   print(string.format('MISS (delta = %s)', tostring((fx.actual_score or 0) - total)))
-  print('Re-run with BH_DEBUG=1 to see Phase-3 per-joker dispatch.')
 end
