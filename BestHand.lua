@@ -2920,6 +2920,15 @@ local function extract_joker(joker)
       remaining   = ability.remaining,
       perma_bonus = ability.perma_bonus,
       extra       = copy_scalars(ability.extra),
+      -- Per-joker accumulated state that joker_main / context.before
+      -- read directly off self.ability. Nil for jokers that don't use
+      -- the field, so the serializer drops them cleanly.
+      driver_tally           = ability.driver_tally,
+      caino_xmult            = ability.caino_xmult,
+      yorick_discards        = ability.yorick_discards,
+      invis_rounds           = ability.invis_rounds,
+      to_do_poker_hand       = ability.to_do_poker_hand,
+      hands_played_at_create = ability.hands_played_at_create,
     },
     edition = extract_edition(joker.edition),
     rarity  = rarity,
