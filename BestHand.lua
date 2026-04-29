@@ -1598,8 +1598,34 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- context.before pre-pass: scaling jokers bump their ability.* here.
   -- Must be restored before return so the next combo iteration sees
   -- the same pre-hand state.
+  --
+  -- Mirror evaluate_play's pre-scoring increment of played counters
+  -- (state_events.lua:590-592) for the duration of the before pass.
+  -- Obelisk reads G.GAME.hands[scoring_name].played in context.before
+  -- to decide whether the played hand is uniquely the most-played; if
+  -- another hand is tied, vanilla sees the post-bump value as
+  -- uniquely highest and resets x_mult, but pre-bump leaves it tied
+  -- and Obelisk fires when it shouldn't. Restore immediately so the
+  -- pre-bump joker_main compensations (Supernova +1, Card Sharp)
+  -- still see the values they were written against.
+  local _played_pre_bump
+  if run_before and hand_info then
+    _played_pre_bump = {
+      played            = hand_info.played,
+      played_this_round = hand_info.played_this_round,
+      played_this_ante  = hand_info.played_this_ante,
+    }
+    hand_info.played            = (hand_info.played or 0) + 1
+    hand_info.played_this_round = (hand_info.played_this_round or 0) + 1
+    hand_info.played_this_ante  = (hand_info.played_this_ante or 0) + 1
+  end
   local before_snapshots = run_before and
     run_before_pass(cards, scoring, hand_name, poker_hands) or nil
+  if _played_pre_bump then
+    hand_info.played            = _played_pre_bump.played
+    hand_info.played_this_round = _played_pre_bump.played_this_round
+    hand_info.played_this_ante  = _played_pre_bump.played_this_ante
+  end
 
   -- Cross-card state for per-card joker effects.
   -- used_ev gets flipped true whenever a probabilistic effect (Lucky Card,
