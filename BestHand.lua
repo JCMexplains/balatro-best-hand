@@ -2200,6 +2200,79 @@ local function cards_label_exclude(cards, exclude)
   return table.concat(labels, ', ')
 end
 
+-- Map ability.name to short display tokens. Plain cards have
+-- ability.name = "Default Base" and are reported as "plain".
+local enhancement_display = {
+  Bonus           = 'Bonus',
+  Mult            = 'Mult',
+  ['Lucky Card']  = 'Lucky',
+  ['Glass Card']  = 'Glass',
+  ['Steel Card']  = 'Steel',
+  ['Stone Card']  = 'Stone',
+  ['Gold Card']   = 'Gold',
+  ['Wild Card']   = 'Wild',
+}
+
+-- Short description of what makes a card distinct beyond its rank/suit:
+-- edition + enhancement + seal. Used to disambiguate duplicate labels
+-- in the "drag into this order" hint, where two Kd's are otherwise
+-- visually identical and the player can't tell which is which.
+local function card_descriptor(card)
+  local parts = {}
+  local edition = card.edition
+  if edition then
+    if edition.polychrome then parts[#parts + 1] = 'Polychrome'
+    elseif edition.holo then parts[#parts + 1] = 'Holographic'
+    elseif edition.foil then parts[#parts + 1] = 'Foil'
+    elseif edition.negative then parts[#parts + 1] = 'Negative'
+    end
+  end
+  local enh = card.ability and enhancement_display[card.ability.name]
+  if enh then parts[#parts + 1] = enh end
+  local desc = #parts > 0 and table.concat(parts, ' ') or 'plain'
+  if card.seal then
+    desc = desc .. ' (' .. card.seal .. ' seal)'
+  end
+  return desc
+end
+
+-- When the optimal play order contains two or more cards that share a
+-- rank/suit label (e.g. two Kd), the "drag into this order" hint is
+-- ambiguous — the player has no way to know which physical card to
+-- place where. For each colliding label, return a "Kd: Lucky, then
+-- Bonus" fragment naming each copy by its distinguishing modifiers.
+-- Returns nil when every label is unique, or when same-labeled cards
+-- are themselves indistinguishable (the order between them is then
+-- score-neutral and a hint would be misleading).
+local function describe_duplicate_order(cards)
+  local groups, order = {}, {}
+  for _, card in ipairs(cards) do
+    local label = card_label(card)
+    if not groups[label] then
+      groups[label] = {}
+      order[#order + 1] = label
+    end
+    local g = groups[label]
+    g[#g + 1] = card_descriptor(card)
+  end
+  local hints = {}
+  for _, label in ipairs(order) do
+    local g = groups[label]
+    if #g > 1 then
+      local all_same = true
+      for i = 2, #g do
+        if g[i] ~= g[1] then all_same = false; break end
+      end
+      if not all_same then
+        hints[#hints + 1] = label .. ': '
+          .. table.concat(g, ', then ')
+      end
+    end
+  end
+  if #hints == 0 then return nil end
+  return table.concat(hints, '; ')
+end
+
 -------------------------------------------------------------------------
 -- Detect whether the joker + card configuration makes scoring ORDER
 -- matter. Returns true when at least one of these conditions holds:
@@ -2637,6 +2710,14 @@ SMODS.Keybind({
         if r.default_score and r.default_score < r.score then
           line = line .. ' (default order: ~'
             .. format_number(r.default_score) .. ')'
+        end
+        -- Two cards with identical rank/suit (e.g. two Kd) look the
+        -- same in the play area, so "drag into this order" alone
+        -- doesn't tell the player which one goes first. Spell out
+        -- the order by enhancement / edition / seal.
+        local dup_hint = describe_duplicate_order(r.cards)
+        if dup_hint then
+          line = line .. '\n     (' .. dup_hint .. ')'
         end
       end
       -- Show tied alternatives if any
