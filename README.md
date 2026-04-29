@@ -12,7 +12,7 @@ Copy this folder into your Balatro mods directory:
 
 ## Keybinds
 
-- **F2** — Print the top 3 scoring hands to the console. Shows card combos, point totals, and — when an order-sensitive joker is active — the optimal left-to-right card arrangement to drag into before playing. Tied alternatives are grouped; probabilistic scores (Lucky Card, Bloodstone) are labeled `(expected value)`.
+- **F2** — Print the top 2 scoring hands to the console. Shows card combos, point totals, and — when an order-sensitive joker is active — the optimal left-to-right card arrangement to drag into before playing. Tied alternatives are grouped; probabilistic scores (Lucky Card, Bloodstone) are labeled `(expected value)`.
 - **F4** — Toggle fixture capture on/off (on by default). See below.
 - **F5** — Toggle debug timing. When on, each F2 press logs `analyze_hand: N ms  (C combos, B perm branches, P perms)` and each played hand logs `evaluate_play predict: S ms single + P ms prob (N configs)`. Use this to pinpoint lag.
 

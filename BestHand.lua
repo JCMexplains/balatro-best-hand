@@ -3,7 +3,7 @@
 -- the highest-scoring play.
 --
 -- Keybinds:
---   F2  Evaluate the current hand: print the top 3 scoring plays,
+--   F2  Evaluate the current hand: print the top 2 scoring plays,
 --       card combos, estimated points, and (when order matters) the
 --       optimal left-to-right card arrangement to drag into before
 --       playing.
@@ -2465,7 +2465,7 @@ end
 
 -------------------------------------------------------------------------
 -- Analyze the current hand: try every possible combo (sizes 5→1),
--- score each one, and return the top 3 distinct hand types.
+-- score each one, and return the top 2 distinct hand types.
 -------------------------------------------------------------------------
 local function analyze_hand_inner()
   if not G or not G.hand or not G.hand.cards then return nil end
@@ -2566,7 +2566,7 @@ local function analyze_hand_inner()
   local top = {}
   for _, entry in ipairs(best) do
     if not seen[entry.name] then
-      if #top >= 3 then break end
+      if #top >= 2 then break end
       seen[entry.name] = true
       entry.alts = {}
       top[#top + 1] = entry
@@ -2632,7 +2632,7 @@ local function schedule_warmup()
 end
 
 -------------------------------------------------------------------------
--- F2 keybind: print the top 3 hands to the console
+-- F2 keybind: print the top 2 hands to the console
 -------------------------------------------------------------------------
 SMODS.Keybind({
   key_pressed = 'f2',
@@ -2660,8 +2660,6 @@ SMODS.Keybind({
         print('')
         print('-- Best Hands --')
         print('No scoring play available. ' .. blind_msg)
-        print('')
-        print('')
       end
       return
     end
@@ -2731,10 +2729,6 @@ SMODS.Keybind({
       end
       lines[#lines + 1] = line
     end
-    -- Trailing blanks separate the F2 output from Lovely's DT logs that
-    -- flood the console after every keypress.
-    lines[#lines + 1] = ''
-    lines[#lines + 1] = ''
     for _, line in ipairs(lines) do print(line) end
   end
 })
