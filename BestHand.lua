@@ -2058,6 +2058,17 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
         if effect and name == 'Supernova' then
           effect.mult_mod = (effect.mult_mod or 0) + 1
         end
+        -- Same pre-increment story for Card Sharp: vanilla checks
+        -- played_this_round > 1, which is post-bump >= 2, i.e.
+        -- pre-bump >= 1. joker_main returns nil pre-bump in that
+        -- window, so synthesize the Xmult_mod.
+        if not effect and name == 'Card Sharp' then
+          local h = G.GAME and G.GAME.hands and G.GAME.hands[hand_name]
+          if h and (h.played_this_round or 0) >= 1 then
+            local xm = joker.ability.extra and joker.ability.extra.Xmult or 3
+            effect = { Xmult_mod = xm }
+          end
+        end
       end
 
       -------------------------------------------------------
