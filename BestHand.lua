@@ -2314,6 +2314,39 @@ local function describe_duplicate_order(cards)
   return table.concat(hints, '; ')
 end
 
+-- Balatro's get_straight walks each rank in the run and adds EVERY card
+-- of that rank to scoring_hand, so a Straight (or Straight Flush / Royal
+-- Flush) played with two cards sharing a rank — A-K-Q-J-J or 3-4-4-5-6 —
+-- counts both copies. Without a hint this looks wrong: the duplicate
+-- reads as a non-scoring kicker that the mod is incorrectly listing.
+-- Annotate so the player recognizes both copies score.
+local function describe_rank_duplicates(name, cards)
+  if name ~= 'Straight' and name ~= 'Straight Flush'
+    and name ~= 'Royal Flush' then return nil end
+  local counts, order = {}, {}
+  for _, c in ipairs(cards) do
+    -- Stone Cards score as unconditional kickers, not as straight-pattern
+    -- members; their base.id can collide with a real scoring card and
+    -- would falsely look like a same-rank duplicate.
+    if not (c.ability and c.ability.name == 'Stone Card') then
+      local id = c.base.id
+      if not counts[id] then
+        counts[id] = 0
+        order[#order + 1] = id
+      end
+      counts[id] = counts[id] + 1
+    end
+  end
+  local labels = {}
+  for _, id in ipairs(order) do
+    if counts[id] > 1 then
+      labels[#labels + 1] = (rank_names[id] or '?') .. 's'
+    end
+  end
+  if #labels == 0 then return nil end
+  return 'both ' .. table.concat(labels, ' and ') .. ' score'
+end
+
 -------------------------------------------------------------------------
 -- Detect whether the joker + card configuration makes scoring ORDER
 -- matter. Returns true when at least one of these conditions holds:
@@ -2758,6 +2791,10 @@ SMODS.Keybind({
         if dup_hint then
           line = line .. '\n     (' .. dup_hint .. ')'
         end
+      end
+      local rank_dup_hint = describe_rank_duplicates(r.name, r.cards)
+      if rank_dup_hint then
+        line = line .. '\n     (' .. rank_dup_hint .. ')'
       end
       -- Show tied alternatives if any
       if r.alts and #r.alts > 0 then
