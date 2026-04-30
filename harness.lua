@@ -567,11 +567,41 @@ end
 -- Oracle: load common_events.lua + state_events.lua and run real
 -- evaluate_play. Re-stub helpers that reach for state we don't have.
 -------------------------------------------------------------------------
+-- balatro_src/ is the un-patched vanilla extraction. The live game runs
+-- under SMODS (smods/lovely/better_calc.toml), which replaces vanilla's
+-- `mult = mod_mult(mult * Xmult_mod)` with the form
+-- `Scoring_Parameters.mult:modify(mult * (amount - 1))` — i.e.
+-- `mult + mult * (Xmult_mod - 1)`. Mathematically equal, but it
+-- accumulates ULP drift differently. Without this rewrite the offline
+-- oracle disagrees with both the in-game scorer and BestHand's own
+-- `apply_xmult` at the ±1-chip level on hands involving Steel Joker
+-- (the only joker whose xMult is a 0.2-step decimal that triggers the
+-- subtractive-cancellation in `Xmult_mod - 1`).
+local function load_state_events_smods_form()
+  local path = SRC_DIR .. '/functions/state_events.lua'
+  local f, err = io.open(path, 'r')
+  if not f then
+    io.stderr:write('[harness] failed to open ' .. path .. ': ' .. tostring(err) .. '\n')
+    os.exit(1)
+  end
+  local src = f:read('*a'); f:close()
+  src = src:gsub('mult%*([%w_%.]+)%.Xmult_mod',
+                 '(mult + mult*(%1.Xmult_mod - 1))')
+  src = src:gsub('mult%*([%w_%.]+)%.x_mult_mod',
+                 '(mult + mult*(%1.x_mult_mod - 1))')
+  local chunk, lerr = loadstring(src, '@' .. path)
+  if not chunk then
+    io.stderr:write('[harness] state_events.lua patch failed: ' .. tostring(lerr) .. '\n')
+    os.exit(1)
+  end
+  chunk()
+end
+
 local oracle_loaded = false
 function H.enable_oracle()
   if oracle_loaded then return end
   load_src('functions/common_events.lua')
-  load_src('functions/state_events.lua')
+  load_state_events_smods_form()
 
   -- common_events.lua redefines these against UI/state we don't model.
   -- Synchronous side effects in their bodies break things (e.g.
