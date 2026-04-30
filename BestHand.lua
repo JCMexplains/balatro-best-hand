@@ -770,7 +770,13 @@ local function fast_evaluate_poker_hand(cards, has_smeared, four_fingers, has_sh
                  or eff_s >= flush_min or eff_c >= flush_min
 
   -- Straight: walk ranks 1..14, allow ace-low (id 14 → also id 1).
-  -- Shortcut allows one gap.
+  -- Shortcut lets the walk skip an absent rank (the `skipped` flag
+  -- resets on the next present rank, so multiple gaps are allowed
+  -- as long as no two adjacent ranks are both absent). Mirrors
+  -- get_straight in balatro_src/functions/misc_functions.lua:548 —
+  -- crucially, only present ranks count toward `run`; a skipped
+  -- rank does NOT bump the length, otherwise A,2,_,4,_ would be
+  -- mistakenly accepted as a 5-card Shortcut straight.
   local straight_min = four_fingers and 4 or 5
   local has_straight = false
   do
@@ -800,8 +806,6 @@ local function fast_evaluate_poker_hand(cards, has_smeared, four_fingers, has_sh
         if run >= straight_min then has_straight = true; break end
       elseif has_shortcut and not skipped and j ~= 14 then
         skipped = true
-        run = run + 1
-        if run >= straight_min then has_straight = true; break end
       else
         run = 0
         skipped = false
