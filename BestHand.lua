@@ -1685,6 +1685,15 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
     end
   end
 
+  -- Wrap Phases 1-3 in pcall so an unexpected error (a misbehaving
+  -- modded joker, a torn fixture, an arithmetic on nil) can't skip the
+  -- ability-restore cleanup that follows. Without this, a leaked
+  -- before-pass scaling bump or Lucky Cat x_mult bump would persist
+  -- for the rest of the session. The closure captures all the locals
+  -- declared above (chips, mult, scoring, state, …) by reference, so
+  -- mutations propagate out as before.
+  local function _score_body()
+
   -------------------------------------------------
   -- Phase 1: each scoring card fires L→R
   -- Each trigger applies in order:
@@ -2192,8 +2201,13 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
     end
   end
 
+  end  -- _score_body
+
+  local ok, err = pcall(_score_body)
+
   -- Roll back the before-pass mutations so the next combo (and any
   -- external reader of joker.ability.*) sees the original state.
+  -- Runs whether _score_body succeeded or errored.
   if before_snapshots then restore_before_pass(before_snapshots) end
 
   -- Roll back Lucky Cat bumps applied during Phase 1's per-card loop.
@@ -2202,6 +2216,8 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
       lc.joker.ability.x_mult = lc.original_x_mult
     end
   end
+
+  if not ok then error(err, 0) end
 
   -- Balatro floors the final score to an integer; mirror that so
   -- polychrome/holo chains producing fractional intermediates match.
@@ -3121,7 +3137,10 @@ local function write_capture(fixture)
     end
     f:close()
   end
-  if not path then return end
+  if not path then
+    print('[BestHand] capture write skipped: 1000 collisions at ' .. stamp)
+    return
+  end
 
   local f = io.open(path, 'w')
   if not f then
