@@ -64,6 +64,20 @@ local function now_ms()
 end
 
 -------------------------------------------------------------------------
+-- Respect face-down cards. When true (default), cards with
+-- `facing == 'back'` are excluded from analyze_hand's combo enumeration
+-- and from apply_held_effects, so the predictor doesn't peek at cards
+-- the player can't see (The Wheel, The House, The Mark, The Fish).
+-- Toggled at runtime by the F6 keybind. The flag only gates analysis;
+-- per-play capture/scoring still runs on the real hand because by the
+-- time evaluate_play fires, every selected card is face-up anyway.
+-------------------------------------------------------------------------
+local respect_face_down = true
+local function is_face_down(card)
+  return card and card.facing == 'back'
+end
+
+-------------------------------------------------------------------------
 -- Utility: generate all k-element subsets of a list
 -------------------------------------------------------------------------
 local function combinations(list, k)
@@ -1899,6 +1913,12 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- all read from `precomputed` — same reason Hiker is hoisted.
   local function apply_held_effects(card)
     if card.debuff then return end
+    -- When respecting face-down cards, the player can't know whether a
+    -- back-facing card is a King, Queen, Steel, etc., so it can't
+    -- contribute to Baron / Shoot the Moon / Steel-held / Mime / Raised
+    -- Fist. Skip entirely — matches the "treat unknown as nothing"
+    -- model used by analyze_hand's combo filter.
+    if respect_face_down and is_face_down(card) then return end
     local is_steel = card.ability and card.ability.name == 'Steel Card'
     -- Stone Cards override Card:get_id to return a random negative
     -- value, so Baron and Shoot the Moon (which test get_id == 13/12)
@@ -2543,8 +2563,25 @@ end
 -------------------------------------------------------------------------
 local function analyze_hand_inner()
   if not G or not G.hand or not G.hand.cards then return nil end
-  local cards = G.hand.cards
-  if #cards == 0 then return nil end
+  local hand_cards = G.hand.cards
+  if #hand_cards == 0 then return nil end
+
+  -- Visible-only view of the hand. When respect_face_down is on, F2
+  -- treats face-down cards (Wheel/House/Mark/Fish) as if the player
+  -- can't see them: they're never proposed for play, and held-in-hand
+  -- effects (Baron/Shoot the Moon/Steel/Mime/Raised Fist) skip them.
+  -- score_combo still receives the FULL G.hand.cards as `all_cards` so
+  -- the held-iteration walks them — apply_held_effects early-returns
+  -- on face-down inside score_combo.
+  local cards = hand_cards
+  if respect_face_down then
+    local visible = {}
+    for _, c in ipairs(hand_cards) do
+      if not is_face_down(c) then visible[#visible + 1] = c end
+    end
+    cards = visible
+    if #cards == 0 then return nil end
+  end
 
   -- Resolve Blueprint/Brainstorm once and precompute the per-F2
   -- invariants (Pareidolia, Hiker, Baron, Shoot the Moon, Baseball
@@ -2565,7 +2602,7 @@ local function analyze_hand_inner()
       for _, combo in ipairs(combinations(cards, size)) do
         combo_n = combo_n + 1
         local name, score, scoring, used_ev =
-          score_combo(combo, cards, nil, nil, precomputed)
+          score_combo(combo, hand_cards, nil, nil, precomputed)
         -- Skip zero-score combos (boss-blind debuffs like The Eye /
         -- The Mouth zero the whole hand; The Psychic zeros any combo
         -- with fewer than 5 cards). These are never worth showing.
@@ -2605,7 +2642,7 @@ local function analyze_hand_inner()
                 reordered[#reordered + 1] = c
               end
               local _, ps, psc, pev =
-                score_combo(reordered, cards, nil, nil, precomputed)
+                score_combo(reordered, hand_cards, nil, nil, precomputed)
               if ps > score then
                 score         = ps
                 scoring       = psc
@@ -3281,5 +3318,17 @@ SMODS.Keybind({
   action = function(self)
     debug_timing = not debug_timing
     print('[BestHand] debug timing ' .. (debug_timing and 'ON' or 'off'))
+  end
+})
+
+SMODS.Keybind({
+  key_pressed = 'f6',
+  action = function(self)
+    respect_face_down = not respect_face_down
+    if respect_face_down then
+      print('[BestHand] respecting face-down cards (default) — predictor will not peek at face-down cards')
+    else
+      print('[BestHand] face-down peeking ENABLED — predictor will read face-down cards')
+    end
   end
 })
