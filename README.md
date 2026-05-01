@@ -26,7 +26,7 @@ Scoring dispatch goes through Balatro's own `Card:calculate_joker` on every joke
 - Retrigger jokers: Red Seal, Mime, Hack, Sock and Buskin, Hanging Chad, Dusk, Seltzer
 - Blueprint and Brainstorm copy resolution, including chained Blueprints
 - Held-in-hand effects: Steel Card (with editions), Baron, Shoot the Moon
-- Four Fingers, Smeared Joker, Pareidolia, Splash
+- Four Fingers, Smeared Joker, Pareidolia, Splash, Shortcut
 - `context.before` pre-pass mirrors Balatro's own (state_events.lua:628): scaling jokers (Green Joker, Spare Trousers, Ride the Bus, Square Joker, Runner, Obelisk, Hologram, Madness, Glass Joker, etc.) get their `ability.*` bumped before `joker_main` reads. Destructive before-context side effects (DNA, Vampire, Midas Mask, To Do List, Space Joker) are skipped
 - Per-round state jokers that read from `G.GAME.current_round` (Ancient Joker, The Idol)
 - Boss blinds: The Eye and The Mouth (hand debuff → score zeroed), The Psychic (must play exactly 5 cards), The Arm (level penalty applied to base chips/mult), The Flint (base chips and mult halved)
