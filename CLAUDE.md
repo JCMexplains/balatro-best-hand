@@ -41,7 +41,7 @@ Probabilistic jokers (Lucky Card, Bloodstone) use **expected value** in the prim
 
 ## Architecture — fixture capture and offline replay
 
-`G.FUNCS.evaluate_play` is wrapped (BestHand.lua:2140) to capture every played hand **pre-scoring**. When the predicted score doesn't match the actual, a Lua-literal capture file is written to `<save>/Mods/balatro-best-hand/best_hand_captures/capture_<timestamp>_<n>.lua` with the played cards, held cards, jokers, relevant `G.GAME` state, the predicted score, and the actual. F4 toggles capture on/off (on by default). F5 toggles debug timing.
+`G.FUNCS.evaluate_play` is wrapped (BestHand.lua:2140) to capture every played hand **pre-scoring**. When the predicted score doesn't match the actual, a Lua-literal capture file is written to `<save>/Mods/balatro-best-hand/best_hand_captures/capture_<timestamp>_<n>.lua` with the played cards, held cards, jokers, relevant `G.GAME` state, the predicted score, and the actual. F4 toggles capture on/off — default is ON in dev installs (auto-detected via readable `.git/HEAD`) and OFF in released zips. F5 toggles debug timing.
 
 Captures are loadable with `dofile` and replayable through `batch_verify.lua` / `trace_one.lua` / the oracle harness.
 

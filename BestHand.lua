@@ -7,8 +7,9 @@
 --       card combos, estimated points, and (when order matters) the
 --       optimal left-to-right card arrangement to drag into before
 --       playing.
---   F4  Toggle fixture capture on/off (on by default — see bottom of
---       this file for the regression harness).
+--   F4  Toggle fixture capture on/off. Default: ON in dev installs
+--       (when .git/ is readable), OFF in released zips. See bottom of
+--       this file for the regression harness.
 --   F5  Toggle debug timing: log wall-clock for the F2 search and
 --       the per-play prediction/enumeration to the game console.
 --
@@ -2870,7 +2871,9 @@ SMODS.Keybind({
 -- are the oracle for offline regression tests — the game itself is the
 -- ground truth, not hand-traced expected values.
 --
--- Toggle with F4 (on by default). Captures go to
+-- Toggle with F4. Default: ON when .git/ is present (dev install),
+-- OFF otherwise (released zip — end users opt in by pressing F4).
+-- Captures go to
 --   <save>/Mods/balatro-best-hand/best_hand_captures/capture_<timestamp>_<n>.lua
 -- Each file is a Lua literal loadable with dofile():
 --   return { played=..., held=..., jokers=..., game=...,
@@ -2884,7 +2887,11 @@ SMODS.Keybind({
 -- counters at the top of evaluate_play before scoring with them.
 -------------------------------------------------------------------------
 
-local capture_enabled = true
+-- MOD_VERSION resolves to the git commit hash in dev installs (where
+-- .git/HEAD is readable) and stays 'unknown' in released zips. We use
+-- that as the dev-vs-release signal so end users don't accumulate
+-- capture files they'll never look at.
+local capture_enabled = (MOD_VERSION ~= 'unknown')
 local capture_dir = 'Mods/balatro-best-hand/best_hand_captures'
 
 -- Serialize a plain Lua value as a Lua literal. Not general-purpose:
