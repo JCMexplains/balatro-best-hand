@@ -1,45 +1,96 @@
 # release.ps1 — package the mod for end-user distribution.
 #
-# Reads version from BestHand.json, stages the runtime files in dist/,
-# and zips them as dist/balatro-best-hand-vX.Y.Z.zip. The zip's top-level
-# folder is `balatro-best-hand/`, so users extract straight into
-# %APPDATA%/Balatro/Mods/.
+# Reads version from BestHand.json and produces two zips in dist/:
 #
-# Excludes everything dev-only: offline tools (batch_verify, trace_one,
-# synth_fuzz, harness, bench_*), dev docs (CLAUDE.md, STYLE.md), the
-# captures dir, balatro_src/, .git/, and this script itself.
+#   1. balatro-best-hand-v<version>.zip
+#      Steamodded drop-in. Top-level folder is `balatro-best-hand/`,
+#      so users extract straight into %APPDATA%/Balatro/Mods/.
+#      Suitable for GitHub Releases / manual install.
+#
+#   2. balatro-best-hand-thunderstore-v<version>.zip
+#      Thunderstore package format. All files at the zip root,
+#      including manifest.json, icon.png (256x256), and CHANGELOG.md,
+#      per https://wiki.thunderstore.io/mods/creating-a-package.
+#
+# Both exclude dev-only files (offline tools, CLAUDE.md, STYLE.md,
+# captures dir, balatro_src/, .git/, this script).
 
 $ErrorActionPreference = 'Stop'
 
 $root    = $PSScriptRoot
-$modDir  = 'balatro-best-hand'
 $json    = Get-Content -Raw -Path (Join-Path $root 'BestHand.json') | ConvertFrom-Json
 $version = $json.version
 $dist    = Join-Path $root 'dist'
-$staging = Join-Path $dist $modDir
-$zipPath = Join-Path $dist "$modDir-v$version.zip"
 
-# Files end users need. Anything not on this list does not ship.
-$include = @(
+if (-not (Test-Path $dist)) { New-Item -ItemType Directory -Path $dist -Force | Out-Null }
+
+# ---------- Steamodded drop-in zip ----------
+$dropInDir   = 'balatro-best-hand'
+$dropInStage = Join-Path $dist $dropInDir
+$dropInZip   = Join-Path $dist "$dropInDir-v$version.zip"
+
+$dropInInclude = @(
     'BestHand.lua',
     'BestHand.json',
     'README.md',
     'LICENSE'
 )
 
-if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
-New-Item -ItemType Directory -Path $staging -Force | Out-Null
-
-foreach ($file in $include) {
+if (Test-Path $dropInStage) { Remove-Item -Recurse -Force $dropInStage }
+New-Item -ItemType Directory -Path $dropInStage -Force | Out-Null
+foreach ($file in $dropInInclude) {
     $src = Join-Path $root $file
-    if (-not (Test-Path $src)) {
-        throw "Missing required file: $file"
-    }
-    Copy-Item -Path $src -Destination $staging
+    if (-not (Test-Path $src)) { throw "Missing required file: $file" }
+    Copy-Item -Path $src -Destination $dropInStage
+}
+if (Test-Path $dropInZip) { Remove-Item -Force $dropInZip }
+Compress-Archive -Path $dropInStage -DestinationPath $dropInZip
+Remove-Item -Recurse -Force $dropInStage
+Write-Output "Built $dropInZip"
+
+# ---------- Thunderstore zip ----------
+# Thunderstore validates the manifest's version_number against the package
+# version on upload, and rejects icons that aren't exactly 256x256.
+# Catch both locally before we waste an upload.
+$manifestPath = Join-Path $root 'manifest.json'
+if (-not (Test-Path $manifestPath)) { throw "Missing manifest.json at repo root" }
+$manifest = Get-Content -Raw -Path $manifestPath | ConvertFrom-Json
+if ($manifest.version_number -ne $version) {
+    throw "Version mismatch: BestHand.json=$version but manifest.json=$($manifest.version_number). Bump both together."
 }
 
-if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
-Compress-Archive -Path $staging -DestinationPath $zipPath
-Remove-Item -Recurse -Force $staging
+Add-Type -AssemblyName System.Drawing
+$iconPath = Join-Path $root 'icon.png'
+if (-not (Test-Path $iconPath)) { throw "Missing icon.png at repo root (Thunderstore requires 256x256 PNG)" }
+$img = [System.Drawing.Image]::FromFile($iconPath)
+try {
+    if ($img.Width -ne 256 -or $img.Height -ne 256) {
+        throw "icon.png must be exactly 256x256, got $($img.Width)x$($img.Height)"
+    }
+} finally { $img.Dispose() }
 
-Write-Output "Built $zipPath"
+$tsStage = Join-Path $dist 'thunderstore-staging'
+$tsZip   = Join-Path $dist "balatro-best-hand-thunderstore-v$version.zip"
+
+$tsInclude = @(
+    'BestHand.lua',
+    'BestHand.json',
+    'README.md',
+    'LICENSE',
+    'CHANGELOG.md',
+    'manifest.json',
+    'icon.png'
+)
+
+if (Test-Path $tsStage) { Remove-Item -Recurse -Force $tsStage }
+New-Item -ItemType Directory -Path $tsStage -Force | Out-Null
+foreach ($file in $tsInclude) {
+    $src = Join-Path $root $file
+    if (-not (Test-Path $src)) { throw "Missing required file: $file" }
+    Copy-Item -Path $src -Destination $tsStage
+}
+if (Test-Path $tsZip) { Remove-Item -Force $tsZip }
+# Files at zip root (not nested under the staging folder).
+Compress-Archive -Path (Join-Path $tsStage '*') -DestinationPath $tsZip
+Remove-Item -Recurse -Force $tsStage
+Write-Output "Built $tsZip"
