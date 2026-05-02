@@ -68,3 +68,7 @@ lua trace_one.lua path/to/capture.lua
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Credits
+
+Developed with assistance from Claude (Anthropic).
