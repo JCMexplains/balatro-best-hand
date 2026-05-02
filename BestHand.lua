@@ -12,6 +12,7 @@
 --       this file for the regression harness.
 --   F5  Toggle debug timing: log wall-clock for the F2 search and
 --       the per-play prediction/enumeration to the game console.
+--       Dev-only — registered only in dev installs (.git/ readable).
 --
 -- Scoring follows Balatro's evaluation order:
 --   Phase 1: Each scoring card fires L→R (with retriggers):
@@ -55,9 +56,10 @@ end
 -- Debug timing. When true, F2 and the per-play prediction hook log
 -- wall-clock breakdowns to the game console so you can tell whether
 -- lag is coming from F2's combinatorial search or from the per-play
--- probabilistic enumeration. Toggled at runtime by the F5 keybind
--- (registered near the bottom of this file). Declared up here so
--- every handler below — including F2 — captures it as an upvalue.
+-- probabilistic enumeration. Toggled at runtime by the F5 keybind,
+-- which is registered only in dev installs (see bottom of file).
+-- Declared up here so every handler below — including F2 — captures
+-- it as an upvalue.
 -------------------------------------------------------------------------
 local debug_timing = false
 local function now_ms()
@@ -69,9 +71,11 @@ end
 -- `facing == 'back'` are excluded from analyze_hand's combo enumeration
 -- and from apply_held_effects, so the predictor doesn't peek at cards
 -- the player can't see (The Wheel, The House, The Mark, The Fish).
--- Toggled at runtime by the F6 keybind. The flag only gates analysis;
--- per-play capture/scoring still runs on the real hand because by the
--- time evaluate_play fires, every selected card is face-up anyway.
+-- Toggled at runtime by the F6 keybind, which is registered only in
+-- dev installs (see bottom of file) — end users always run with this
+-- on. The flag only gates analysis; per-play capture/scoring still
+-- runs on the real hand because by the time evaluate_play fires,
+-- every selected card is face-up anyway.
 -------------------------------------------------------------------------
 local respect_face_down = true
 local function is_face_down(card)
@@ -3339,22 +3343,30 @@ SMODS.Keybind({
   end
 })
 
-SMODS.Keybind({
-  key_pressed = 'f5',
-  action = function(self)
-    debug_timing = not debug_timing
-    print('[BestHand] debug timing ' .. (debug_timing and 'ON' or 'off'))
-  end
-})
-
-SMODS.Keybind({
-  key_pressed = 'f6',
-  action = function(self)
-    respect_face_down = not respect_face_down
-    if respect_face_down then
-      print('[BestHand] respecting face-down cards (default) — predictor will not peek at face-down cards')
-    else
-      print('[BestHand] face-down peeking ENABLED — predictor will read face-down cards')
+-- F5 is a dev diagnostic — only registered when running from a git
+-- checkout. Released zips have MOD_VERSION == 'unknown'.
+if MOD_VERSION ~= 'unknown' then
+  SMODS.Keybind({
+    key_pressed = 'f5',
+    action = function(self)
+      debug_timing = not debug_timing
+      print('[BestHand] debug timing ' .. (debug_timing and 'ON' or 'off'))
     end
-  end
-})
+  })
+end
+
+-- F6 is a dev-only toggle for poking at the face-down behavior. End
+-- users always run with respect_face_down=true (the default).
+if MOD_VERSION ~= 'unknown' then
+  SMODS.Keybind({
+    key_pressed = 'f6',
+    action = function(self)
+      respect_face_down = not respect_face_down
+      if respect_face_down then
+        print('[BestHand] respecting face-down cards (default) — predictor will not peek at face-down cards')
+      else
+        print('[BestHand] face-down peeking ENABLED — predictor will read face-down cards')
+      end
+    end
+  })
+end
