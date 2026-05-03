@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.2 — 2026-05-03
+
+- Fix Blueprint (and Brainstorm) copying Baseball Card not contributing the second X1.5 mult per Uncommon joker — vanilla fires Baseball Card's `context.other_joker` reaction once for the real card and once for each copy.
+- Fix Bootstraps (and Bull) reading stale `G.GAME.dollars` during analysis — vanilla `get_p_dollars` bumps `dollar_buffer` for Gold seals during the per-card phase, so the Phase-3 joker loop now mirrors that bump using the already-tracked `scoring_dollars`.
+
 ## 1.0.1 — 2026-05-01
 
 - Removed dev-only debug keybinds (F5 timing, F6 face-down toggle) from the user README. They remain registered in dev installs only and are not part of the released mod.

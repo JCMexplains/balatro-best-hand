@@ -1206,7 +1206,7 @@ local function build_combo_precomputed(resolved)
   local hiker_count = 0
   local has_baron, baron_count = false, 0
   local has_shoot_moon, shoot_moon_count = false, 0
-  local has_baseball_card = false
+  local baseball_card_count = 0
   -- Phase gates: skip run_before_pass / per-card real dispatch when
   -- no joker in the (resolved) list has a branch for that context.
   -- Huge win on common joker loadouts (Blueprint + copy jokers +
@@ -1244,7 +1244,7 @@ local function build_combo_precomputed(resolved)
       has_shoot_moon = true
       shoot_moon_count = shoot_moon_count + 1
     elseif n == 'Baseball Card' then
-      has_baseball_card = true
+      baseball_card_count = baseball_card_count + 1
     elseif n == 'Bloodstone' then
       has_bloodstone_pc = true
     elseif n == 'Smeared Joker' then
@@ -1270,7 +1270,7 @@ local function build_combo_precomputed(resolved)
     baron_count         = baron_count,
     has_shoot_moon      = has_shoot_moon,
     shoot_moon_count    = shoot_moon_count,
-    has_baseball_card   = has_baseball_card,
+    baseball_card_count = baseball_card_count,
     run_before          = run_before,
     run_individual      = run_individual,
     enter_per_card_loop = has_pure_individual or has_bloodstone_pc,
@@ -1612,7 +1612,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   local baron_count         = precomputed.baron_count
   local has_shoot_moon      = precomputed.has_shoot_moon
   local shoot_moon_count    = precomputed.shoot_moon_count
-  local has_baseball_card   = precomputed.has_baseball_card
+  local baseball_card_count = precomputed.baseball_card_count
   local run_before          = precomputed.run_before
   local run_individual      = precomputed.run_individual
   local enter_per_card_loop = precomputed.enter_per_card_loop
@@ -1697,6 +1697,8 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- for the rest of the session. The closure captures all the locals
   -- declared above (chips, mult, scoring, state, …) by reference, so
   -- mutations propagate out as before.
+  local saved_dollar_buffer
+  local dollar_buffer_set = false
   local function _score_body()
 
   -------------------------------------------------
@@ -2051,6 +2053,19 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
     cardarea     = G.jokers,
   } or nil
 
+  -- Vanilla `get_p_dollars` (balatro_src/card.lua:1084) bumps
+  -- G.GAME.dollar_buffer for every Gold seal (and Lucky/Gold-card
+  -- p_dollars) during the per-card phase, BEFORE the Phase-3
+  -- joker_main loop fires. Bootstraps (`dollars + dollar_buffer`)
+  -- and Bull read this value, so analysis-time predictions miss any
+  -- mid-hand dollars. Mirror the bump here using the scoring_dollars
+  -- accumulated during Phase 1; restore unconditionally after pcall.
+  if scoring_dollars > 0 and G.GAME then
+    saved_dollar_buffer = G.GAME.dollar_buffer
+    G.GAME.dollar_buffer = (saved_dollar_buffer or 0) + scoring_dollars
+    dollar_buffer_set = true
+  end
+
   -- Iterate the real joker Card objects (not the resolved list) so
   -- calculate_joker is called on the actual Card — Blueprint's own
   -- calculate_joker handles delegation to its copy target internally.
@@ -2175,12 +2190,19 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
       -- at joker.config.center.rarity; fixture tables from
       -- extract_joker store the scalar at joker.rarity. Checking
       -- only the latter silently skipped the effect in-game.
+      --
+      -- Blueprint/Brainstorm copies of Baseball Card each add a
+      -- second X1.5 per uncommon (each copy fires its own
+      -- context.other_joker reaction in vanilla via
+      -- SMODS.blueprint_effect), so apply once per resolved BC.
       ---------------------------------------------------------
       local rarity = joker.rarity
         or (joker.config and joker.config.center
           and joker.config.center.rarity)
-      if has_baseball_card and rarity == 2 then
-        mult = apply_xmult(mult, 1.5)
+      if baseball_card_count > 0 and rarity == 2 then
+        for _ = 1, baseball_card_count do
+          mult = apply_xmult(mult, 1.5)
+        end
       end
 
       ---------------------------------------------------------
@@ -2214,6 +2236,12 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- external reader of joker.ability.*) sees the original state.
   -- Runs whether _score_body succeeded or errored.
   if before_snapshots then restore_before_pass(before_snapshots) end
+
+  -- Restore G.GAME.dollar_buffer if we bumped it for the Phase-3
+  -- joker loop. Always runs, even if pcall errored mid-loop.
+  if dollar_buffer_set then
+    G.GAME.dollar_buffer = saved_dollar_buffer
+  end
 
   -- Roll back Lucky Cat bumps applied during Phase 1's per-card loop.
   if lucky_cats then
