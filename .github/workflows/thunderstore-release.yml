@@ -1,0 +1,44 @@
+name: Publish to Thunderstore
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $version = '${{ github.ref_name }}' -replace '^v', ''
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Verify tag matches manifest.json
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -Raw -Path manifest.json | ConvertFrom-Json
+          if ($manifest.version_number -ne '${{ steps.version.outputs.version }}') {
+            throw "Tag ${{ github.ref_name }} does not match manifest.json version_number ($($manifest.version_number)). Bump manifest.json before tagging."
+          }
+
+      - name: Build release zips
+        shell: pwsh
+        run: ./release.ps1
+
+      - name: Upload to Thunderstore
+        uses: GreenTF/upload-thunderstore-package@v4.3
+        with:
+          namespace: JCMexplains
+          community: balatro
+          name: BestHandAdvisor
+          description: Predicts the highest-scoring play from your current hand, accounting for jokers, enhancements, editions, seals, and most boss blinds.
+          version: ${{ steps.version.outputs.version }}
+          token: ${{ secrets.THUNDERSTORE_TOKEN }}
+          file: dist/balatro-best-hand-thunderstore-v${{ steps.version.outputs.version }}.zip
+          categories: |
+            Mods
