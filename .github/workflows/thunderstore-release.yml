@@ -59,5 +59,11 @@ jobs:
           version: ${{ needs.build.outputs.version }}
           token: ${{ secrets.THUNDERSTORE_TOKEN }}
           file: dist/balatro-best-hand-thunderstore-v${{ needs.build.outputs.version }}.zip
+          # Workaround for entrypoint.sh bug in GreenTF v4.3: when `repo`
+          # is unset, the action passes --repository "" to tcli, which
+          # then resolves to "file:443" and fails DNS. Setting `repo` to
+          # any non-empty value triggers the elif branch which hardcodes
+          # https://thunderstore.io.
+          repo: https://thunderstore.io
           categories: |
             Mods
