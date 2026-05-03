@@ -1,7 +1,7 @@
 {
     "id": "BestHand",
     "name": "Best Hand Advisor",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "author": ["James Martin"],
     "description": "Recommends the highest-scoring hand",
     "prefix": "bh",

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1 — 2026-05-01
+
+- Removed dev-only debug keybinds (F5 timing, F6 face-down toggle) from the user README. They remain registered in dev installs only and are not part of the released mod.
+
 ## 1.0.0 — 2026-05-01
 
 Initial release.
