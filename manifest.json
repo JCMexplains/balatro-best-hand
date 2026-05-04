@@ -1,6 +1,6 @@
 {
     "name": "BestHandAdvisor",
-    "version_number": "1.0.2",
+    "version_number": "1.0.3",
     "website_url": "https://github.com/JCMexplains/balatro-best-hand",
     "description": "Predicts the highest-scoring play from your current hand, accounting for jokers, enhancements, editions, seals, and most boss blinds.",
     "dependencies": [
