@@ -136,32 +136,48 @@ local function gen_card(opts)
   return card
 end
 
--- Always generate a 5-card played hand. Bias toward straight-flush /
--- four-of-a-kind / full-house / two-pair / flush + straight so most
--- fixtures hit a real poker-hand bonus and many jokers fire.
+-- Always generate a 5-card played hand. Bias heavily toward rare and
+-- complex hand types — five-of-a-kind, flush house, flush five, royal
+-- flush — to exercise scoring paths the regular hand-bias rarely hits.
+-- Cumulative weights sum to 100.
 local function gen_played()
-  local mode = math.random(7)
+  local roll = math.random(100)
   local cards = {}
-  if mode == 1 then  -- straight flush (5 consecutive same suit)
+  if roll <= 15 then  -- Five of a Kind (5 same rank, mixed suits)
+    local r = pick(RANKS)
+    for i = 1, 5 do cards[i] = gen_card{rank = r} end
+  elseif roll <= 30 then  -- Flush Five (5 same rank, same suit)
+    local r, s = pick(RANKS), pick(SUITS)
+    for i = 1, 5 do cards[i] = gen_card{rank = r, suit = s} end
+  elseif roll <= 45 then  -- Flush House (3+2 ranks, all same suit)
+    local s = pick(SUITS)
+    local r1, r2 = pick(RANKS), pick(RANKS)
+    while r2.id == r1.id do r2 = pick(RANKS) end
+    for i = 1, 3 do cards[i] = gen_card{rank = r1, suit = s} end
+    for i = 4, 5 do cards[i] = gen_card{rank = r2, suit = s} end
+  elseif roll <= 50 then  -- Royal Flush (10-A same suit)
+    local s = pick(SUITS)
+    for i = 1, 5 do cards[i] = gen_card{rank = RANKS[8 + i], suit = s} end
+  elseif roll <= 60 then  -- Straight Flush (5 consecutive, same suit)
     local s = pick(SUITS)
     local lo = math.random(1, #RANKS - 4)
     for i = 1, 5 do cards[i] = gen_card{rank = RANKS[lo + i - 1], suit = s} end
-  elseif mode == 2 then  -- four of a kind + kicker
+  elseif roll <= 72 then  -- Four of a Kind + kicker
     local r = pick(RANKS)
     for i = 1, 4 do cards[i] = gen_card{rank = r} end
     cards[5] = gen_card()
-  elseif mode == 3 then  -- full house (3 + 2)
+  elseif roll <= 80 then  -- Full House (3 + 2)
     local r1, r2 = pick(RANKS), pick(RANKS)
     while r2.id == r1.id do r2 = pick(RANKS) end
     for i = 1, 3 do cards[i] = gen_card{rank = r1} end
     for i = 4, 5 do cards[i] = gen_card{rank = r2} end
-  elseif mode == 4 then  -- flush
+  elseif roll <= 85 then  -- Flush
     local s = pick(SUITS)
     for i = 1, 5 do cards[i] = gen_card{suit = s} end
-  elseif mode == 5 then  -- straight (mixed suits)
+  elseif roll <= 90 then  -- Straight (mixed suits)
     local lo = math.random(1, #RANKS - 4)
     for i = 1, 5 do cards[i] = gen_card{rank = RANKS[lo + i - 1]} end
-  elseif mode == 6 then  -- two pair + kicker
+  elseif roll <= 95 then  -- Two Pair + kicker
     local r1, r2 = pick(RANKS), pick(RANKS)
     while r2.id == r1.id do r2 = pick(RANKS) end
     cards[1] = gen_card{rank = r1}; cards[2] = gen_card{rank = r1}
