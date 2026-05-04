@@ -65,8 +65,9 @@ for i, j in ipairs(G.jokers.cards) do
 end
 print()
 
-local hand_name, total, _, used_ev, n_prob =
+local hand_name, total, _, used_ev, prob_arities =
   score_combo(played, all_cards)
+local n_prob = prob_arities and #prob_arities or 0
 
 print(string.format(
   'hand=%s  predicted=%s  actual=%s  (used_ev=%s n_prob=%s)',

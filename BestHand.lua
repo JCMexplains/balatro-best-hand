@@ -1410,8 +1410,10 @@ local function eval_per_card_jokers(
         if target.name == 'Bloodstone' then
           if suit_matches(card, 'Hearts') then
             state.prob_idx = state.prob_idx + 1
+            state.prob_arities[state.prob_idx] = 2
             if state.prob_config then
-              if state.prob_config[state.prob_idx] then
+              -- 0 is truthy in Lua, so compare explicitly.
+              if state.prob_config[state.prob_idx] == 1 then
                 mult = apply_xmult(mult, 1.5)
               end
             else
@@ -1515,16 +1517,19 @@ end
 -- Follows Balatro's three-phase evaluation order (scoring cards,
 -- then held-in-hand, then flat jokers).
 --
--- prob_config (optional) pins each boolean probabilistic roll to a specific
--- outcome — an array one-per-event of Lucky Card / Bloodstone fires, true =
--- hit, anything else = miss. Default: use EV and flip used_ev.
+-- prob_config (optional) pins each probabilistic roll to a specific
+-- outcome — an array indexed in emit order. Lucky Card emits ternary
+-- outcomes (0 = neither path, 1 = mult-roll path, 2 = dollars-only path);
+-- Bloodstone emits binary outcomes (0 = miss, 1 = hit). Default: use EV
+-- and flip used_ev.
 -- range_config (optional) pins each range-valued probabilistic event (e.g.
 -- Misprint, which rolls a random integer mult in [min, max]) to a specific
 -- integer. Default: use the midpoint. F4 enumerates every integer value to
 -- get the exact discrete set of possible scores.
--- Returns: hand_name, score, scoring_cards, used_ev, prob_count, range_events.
--- range_events is an array of {lo, hi} bounds, one per range fire, so a
--- caller can iterate the cartesian product to enumerate all outcomes.
+-- Returns: hand_name, score, scoring_cards, used_ev, prob_arities, range_events.
+-- prob_arities is an array of per-event outcome counts (2 or 3) and
+-- range_events is an array of {lo, hi} bounds — a caller can iterate the
+-- cartesian product of both to enumerate all outcomes.
 -------------------------------------------------------------------------
 local function score_combo(cards, all_cards, prob_config, range_config, precomputed)
   -- Build the precomputed bundle here (rather than after the hand-info
@@ -1654,12 +1659,15 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- used_ev gets flipped true whenever a probabilistic effect (Lucky Card,
   -- Bloodstone) contributes to the score in EV mode, so the F2 output can
   -- label the result as an expected value.
-  -- prob_idx is the running count of probabilistic events consumed; F4
-  -- reads the final value to size its enumeration loop. prob_config is
-  -- the caller-supplied outcome pin (nil in F2 / EV mode).
+  -- prob_idx is the running count of probabilistic events consumed.
+  -- prob_arities[i] is the number of distinct outcomes for event i —
+  -- Lucky Card emits 3 (none / mult-roll / dollars-only-roll), Bloodstone
+  -- emits 2 (miss / hit). F4 reads it to size its enumeration loop.
+  -- prob_config is the caller-supplied outcome pin (nil in F2 / EV mode);
+  -- when set, prob_config[i] is an integer in [0, prob_arities[i]).
   local state = {
     photo_card = nil, used_ev = false,
-    prob_idx = 0, prob_config = prob_config,
+    prob_idx = 0, prob_arities = {}, prob_config = prob_config,
     range_idx = 0, range_config = range_config,
     range_events = {},
   }
@@ -1775,42 +1783,38 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
           elseif ename == 'Stone Card' then
             chips = chips + 50
           elseif ename == 'Lucky Card' then
-            -- 1/5 chance of +20 mult. EV mode: +4 average.
-            -- Exact mode: consume the next prob_config slot.
+            -- Two independent rolls per trigger (vanilla card.lua):
+            --   1/5  mult roll  → +20 mult, sets lucky_trigger
+            --   1/15 money roll → +$20,    sets lucky_trigger
+            -- Both paths set lucky_trigger, which bumps Lucky Cat in
+            -- the same individual context (card.lua:3076). Lucky Cat
+            -- bumps once regardless of how many paths fired, so
+            -- (mult+money) collapses with (mult-only) into one
+            -- score-distinguishable outcome. Three outcomes total:
+            --   0: neither rolls fire (4/5 × 14/15 = 56/75) — no mult, no bump
+            --   1: mult roll fires    (1/5)                 — +20 mult, bump
+            --   2: money roll alone   (4/5 × 1/15 = 4/75)   — no mult, bump
+            -- EV mode averages: +4 mult (1/5 × 20), Lucky Cat bump
+            -- weighted by Pr(lucky_trigger) = 19/75 ≈ 0.2533.
             state.prob_idx = state.prob_idx + 1
-            local mult_triggered = nil  -- nil = EV partial, true/false = exact
+            state.prob_arities[state.prob_idx] = 3
+            local outcome = nil  -- nil = EV partial, 0/1/2 = exact
             if state.prob_config then
-              if state.prob_config[state.prob_idx] then
-                mult = mult + 20
-                mult_triggered = true
-              else
-                mult_triggered = false
-              end
+              outcome = state.prob_config[state.prob_idx] or 0
+              if outcome == 1 then mult = mult + 20 end
             else
               mult = mult + 4
               state.used_ev = true
             end
-            -- Lucky Cat bump (vanilla card.lua:3076 sets self.ability.
-            -- x_mult += self.ability.extra when other_card.lucky_trigger
-            -- is set, which fires whenever the mult event triggers).
-            -- Phase 3's joker_main catch-all (card.lua:3653) returns
-            -- the bumped value; restore happens at the bottom of
-            -- score_combo. We approximate the dollars-only path
-            -- (1/15 independent roll that also sets lucky_trigger) by
-            -- ignoring it — the mod's prob_config enumerates only
-            -- the mult roll, and the dollars roll can't move the
-            -- score except via Lucky Cat. Captures where the dollars
-            -- event alone bumps Lucky Cat will still miss.
+            -- Lucky Cat bump. Phase 3's joker_main catch-all
+            -- (card.lua:3653) returns the bumped x_mult; restore
+            -- happens at the bottom of score_combo.
             if lucky_cats then
               for _, lc in ipairs(lucky_cats) do
-                if mult_triggered == true then
+                if outcome == 1 or outcome == 2 then
                   lc.joker.ability.x_mult = lc.joker.ability.x_mult + lc.extra
-                elseif mult_triggered == nil then
-                  -- EV mode: linear approximation matching the +4
-                  -- mult averaging (1/5 × extra). Drift compounds
-                  -- multiplicatively across multiple Lucky cards but
-                  -- matches the existing EV pattern for the +20 mult.
-                  lc.joker.ability.x_mult = lc.joker.ability.x_mult + lc.extra * 0.2
+                elseif outcome == nil then
+                  lc.joker.ability.x_mult = lc.joker.ability.x_mult + lc.extra * (19/75)
                 end
               end
             end
@@ -2255,7 +2259,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- Balatro floors the final score to an integer; mirror that so
   -- polychrome/holo chains producing fractional intermediates match.
   return hand_name, math.floor(chips * mult), scoring,
-    state.used_ev, state.prob_idx, state.range_events
+    state.used_ev, state.prob_arities, state.range_events
 end
 
 -------------------------------------------------------------------------
@@ -3225,38 +3229,40 @@ if G.FUNCS and G.FUNCS.evaluate_play then
         -- on every Eye play.
         fixture.debuffed_by_blind = is_hand_debuffed_by_blind(hn)
 
-        local _, score, _, _, n_prob, range_events =
+        local _, score, _, _, prob_arities, range_events =
           compute_predicted_score(played, held)
         fixture.predicted_score = score
         if debug_timing then t_single_done = now_ms() end
-        n_prob = n_prob or 0
+        prob_arities = prob_arities or {}
         range_events = range_events or {}
+        local n_prob = #prob_arities
 
-        -- Enumerate every reachable score from the discrete
-        -- product of (Lucky/Bloodstone booleans) × (each Misprint
-        -- integer in its [min, max]). Bounded at 10k configs so
-        -- 1-2 Misprints + ≤10 boolean fires stays fast.
+        -- Enumerate every reachable score from the discrete product of
+        -- per-event outcomes (Lucky=3, Bloodstone=2) × each Misprint
+        -- integer in [min, max]. Bounded at 10k configs.
         local range_total = 1
         for _, iv in ipairs(range_events) do
           range_total = range_total * (iv[2] - iv[1] + 1)
         end
-        local total_configs = (2 ^ n_prob) * range_total
+        local prob_total = 1
+        for _, a in ipairs(prob_arities) do prob_total = prob_total * a end
+        local total_configs = prob_total * range_total
         prob_configs = total_configs
 
-        if (n_prob + #range_events) > 0 and n_prob <= 10
-          and total_configs <= 10000 then
+        if (n_prob + #range_events) > 0 and total_configs <= 10000 then
           local possible, seen = {}, {}
-          for pmask = 0, (2 ^ n_prob) - 1 do
-            local pcfg = {}
-            for i = 1, n_prob do
-              pcfg[i] = (math.floor(pmask / (2 ^ (i - 1))) % 2) == 1
+          for pmask = 0, prob_total - 1 do
+            local pcfg, tmp = {}, pmask
+            for i, a in ipairs(prob_arities) do
+              pcfg[i] = tmp % a
+              tmp = math.floor(tmp / a)
             end
             for ridx = 0, range_total - 1 do
-              local rcfg, tmp = {}, ridx
+              local rcfg, rtmp = {}, ridx
               for i, iv in ipairs(range_events) do
                 local span = iv[2] - iv[1] + 1
-                rcfg[i] = iv[1] + (tmp % span)
-                tmp = math.floor(tmp / span)
+                rcfg[i] = iv[1] + (rtmp % span)
+                rtmp = math.floor(rtmp / span)
               end
               local _, s = compute_predicted_score(
                 played, held, pcfg, rcfg)

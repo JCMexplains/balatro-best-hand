@@ -520,10 +520,11 @@ function H.mod_score(fx, opts)
   -- Smeared logic depends on the prior fixture's joker set.
   if _BH.clear_smeared_cache then _BH.clear_smeared_cache() end
 
-  local _, ev_score, _, _, n_prob, range_events =
+  local _, ev_score, _, _, prob_arities, range_events =
     _BH.score_combo(played, all, nil, nil)
-  n_prob = n_prob or 0
+  prob_arities = prob_arities or {}
   range_events = range_events or {}
+  local n_prob = #prob_arities
   local n_range = #range_events
 
   local possible, seen = {}, {}
@@ -535,22 +536,25 @@ function H.mod_score(fx, opts)
   for _, iv in ipairs(range_events) do
     range_total = range_total * (iv[2] - iv[1] + 1)
   end
-  local total_configs = (2 ^ n_prob) * range_total
+  local prob_total = 1
+  for _, a in ipairs(prob_arities) do prob_total = prob_total * a end
+  local total_configs = prob_total * range_total
 
   if (n_prob + n_range) == 0 then
     add(ev_score)
-  elseif n_prob <= 10 and total_configs <= cap then
-    for pmask = 0, (2 ^ n_prob) - 1 do
-      local pcfg = {}
-      for i = 1, n_prob do
-        pcfg[i] = (math.floor(pmask / (2 ^ (i - 1))) % 2) == 1
+  elseif total_configs <= cap then
+    for pmask = 0, prob_total - 1 do
+      local pcfg, tmp = {}, pmask
+      for i, a in ipairs(prob_arities) do
+        pcfg[i] = tmp % a
+        tmp = math.floor(tmp / a)
       end
       for ridx = 0, range_total - 1 do
-        local rcfg, tmp = {}, ridx
+        local rcfg, rtmp = {}, ridx
         for i, iv in ipairs(range_events) do
           local span = iv[2] - iv[1] + 1
-          rcfg[i] = iv[1] + (tmp % span)
-          tmp = math.floor(tmp / span)
+          rcfg[i] = iv[1] + (rtmp % span)
+          rtmp = math.floor(rtmp / span)
         end
         local _, s = _BH.score_combo(played, all, pcfg, rcfg)
         add(s)
