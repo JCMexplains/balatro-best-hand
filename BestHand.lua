@@ -1698,6 +1698,45 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
     end
   end
 
+  -- Space Joker: in context.before, rolls pseudorandom('space') <
+  -- 1/ability.extra (default 1/4) and on success bumps the played
+  -- hand's level by 1 via level_up_hand (vanilla card.lua:3420).
+  -- The level mutation can't be cleanly rolled back during read-only
+  -- analysis, so Space Joker is on before_deny — run_before_pass
+  -- skips it. Instead, enumerate the roll here as an arity-2 prob
+  -- slot per Space Joker. Outcome 1 = upgrade fires, adding one
+  -- level's worth of chips/mult to this combo's base. EV mode adds
+  -- 1/4 of a level. (Blueprint/Brainstorm copies of Space Joker
+  -- would each get an additional roll in vanilla, but this isn't
+  -- enumerated — rare enough to ignore for now.)
+  local space_count = 0
+  if G.jokers and G.jokers.cards then
+    for _, j in ipairs(G.jokers.cards) do
+      if j.ability and j.ability.name == 'Space Joker' and not j.debuff then
+        space_count = space_count + 1
+      end
+    end
+  end
+  if space_count > 0 then
+    local defaults = default_level_increments[hand_name] or {}
+    local l_chips = hand_info.l_chips or defaults.l_chips or 0
+    local l_mult  = hand_info.l_mult  or defaults.l_mult  or 0
+    for _ = 1, space_count do
+      state.prob_idx = state.prob_idx + 1
+      state.prob_arities[state.prob_idx] = 2
+      if state.prob_config then
+        if state.prob_config[state.prob_idx] == 1 then
+          chips = chips + l_chips
+          mult  = mult  + l_mult
+        end
+      else
+        chips = chips + l_chips * 0.25
+        mult  = mult  + l_mult  * 0.25
+        state.used_ev = true
+      end
+    end
+  end
+
   -- Wrap Phases 1-3 in pcall so an unexpected error (a misbehaving
   -- modded joker, a torn fixture, an arithmetic on nil) can't skip the
   -- ability-restore cleanup that follows. Without this, a leaked
