@@ -2215,6 +2215,8 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
       -- (per scored 2), not context.before. We don't mirror the
       -- individual-context loop, so add the delta here. Retriggers
       -- (Seltzer, Hack, Red Seal, etc.) on a 2 scale it per trigger.
+      -- Debuffed 2s (e.g. The Pillar boss debuff) don't fire
+      -- context.individual at all, so they don't bump Wee.
       ---------------------------------------------------------
       if name == 'Wee Joker' then
         local ability = joker.ability or {}
@@ -2222,7 +2224,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
         if type(extra) ~= 'table' then extra = {} end
         local twos_triggers = 0
         for idx, c in ipairs(scoring) do
-          if c.base.id == 2 then
+          if c.base.id == 2 and not c.debuff then
             twos_triggers = twos_triggers
               + get_triggers(c, idx, false, pareidolia, resolved)
           end
