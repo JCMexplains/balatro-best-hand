@@ -3185,6 +3185,21 @@ local function extract_game_state()
 
   game.dollars = G.GAME and G.GAME.dollars
 
+  -- Run identifiers for reproduction. seed alone lets a triager start a
+  -- new Custom Run with the same seed and replay the same choices to
+  -- reach this state; ante/round narrow the scrub target so they don't
+  -- have to guess how far in. Not consumed by score_combo — purely
+  -- diagnostic for misses written to bug_reports/.
+  if G.GAME then
+    if G.GAME.pseudorandom then
+      game.seed = G.GAME.pseudorandom.seed
+    end
+    if G.GAME.round_resets then
+      game.ante = G.GAME.round_resets.ante
+    end
+    game.round = G.GAME.round
+  end
+
   if G.GAME and G.GAME.blind then
     game.blind = {
       name     = G.GAME.blind.name,
