@@ -1845,6 +1845,16 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
               mult = mult + 4
               state.used_ev = true
             end
+            -- Dollar-roll path: vanilla calls ease_dollars($20) which
+            -- bumps G.GAME.dollar_buffer during scoring. Bootstraps
+            -- reads (dollars + dollar_buffer) at joker_main time, so
+            -- omitting this bump silently understates Bootstraps' mult
+            -- by 2 per $5 buffered. Funneling through scoring_dollars
+            -- means the existing dollar_buffer bump at line 2106 picks
+            -- it up before Phase 3.
+            if outcome == 2 then
+              scoring_dollars = scoring_dollars + 20
+            end
             -- Lucky Cat bump. Phase 3's joker_main catch-all
             -- (card.lua:3653) returns the bumped x_mult; restore
             -- happens at the bottom of score_combo.
@@ -2176,18 +2186,25 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
         -- before calculate_joker reads it. Our analysis runs
         -- pre-increment, so the returned value is short by 1.
         -- Patch the effect before apply_edition so polychrome
-        -- Supernova still composes correctly.
-        if effect and name == 'Supernova' then
+        -- Supernova still composes correctly. Match on r_name so
+        -- Blueprint/Brainstorm copying Supernova gets the same
+        -- correction at its own slot.
+        if effect and r_name == 'Supernova' then
           effect.mult_mod = (effect.mult_mod or 0) + 1
         end
         -- Same pre-increment story for Card Sharp: vanilla checks
         -- played_this_round > 1, which is post-bump >= 2, i.e.
         -- pre-bump >= 1. joker_main returns nil pre-bump in that
-        -- window, so synthesize the Xmult_mod.
-        if not effect and name == 'Card Sharp' then
+        -- window, so synthesize the Xmult_mod. r_name covers
+        -- Blueprint/Brainstorm copies — each copy fires its own
+        -- ×3 in the real game.
+        if not effect and r_name == 'Card Sharp' then
           local h = G.GAME and G.GAME.hands and G.GAME.hands[hand_name]
           if h and (h.played_this_round or 0) >= 1 then
-            local xm = joker.ability.extra and joker.ability.extra.Xmult or 3
+            local xm = (r_entry and r_entry.ability
+              and r_entry.ability.extra and r_entry.ability.extra.Xmult)
+              or (joker.ability.extra and joker.ability.extra.Xmult)
+              or 3
             effect = { Xmult_mod = xm }
           end
         end
@@ -3335,6 +3352,15 @@ if G.FUNCS and G.FUNCS.evaluate_play then
     if fixture then
       local ok, err = pcall(function()
         fixture.actual_score = math.floor(SMODS.calculate_round_score())
+
+        -- Stash the raw scoring parameters alongside actual_score.
+        -- Persisted into the capture file so future misses carry their
+        -- own diagnostics without needing the lovely log open. If
+        -- chips × mult ≠ actual_score, the wrapper read is stale; if
+        -- it matches, an unmodeled scoring source inflated chips/mult.
+        local sp = SMODS and SMODS.Scoring_Parameters
+        fixture.actual_chips = sp and sp.chips and sp.chips.current
+        fixture.actual_mult  = sp and sp.mult  and sp.mult.current
 
         -- When the blind zeroes the hand (The Eye / The Mouth),
         -- Balatro's evaluate_play early-exits without touching
