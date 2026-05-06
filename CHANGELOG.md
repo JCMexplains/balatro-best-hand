@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.5 — 2026-05-06
+
+- Fix Blueprint (and Brainstorm) copying Supernova not getting the +1 pre-bump correction at the copy slot — vanilla `joker_main` reads `hands[name].played` pre-bump, so each copy was scoring one play short.
+- Fix Blueprint (and Brainstorm) copying Card Sharp not synthesizing the X3 Xmult at the copy slot — vanilla returns nil pre-bump (because `played_this_round > 1` reads the pre-bump value), so each copy was missing its X3.
+- Fix Lucky Card's dollars-only roll outcome not bumping `dollar_buffer`, causing Bootstraps' joker_main to under-count by 2 mult per $5 of payout when that outcome was selected during enumeration.
+
 ## 1.0.4 — 2026-05-04
 
 (1.0.3 was tagged but never shipped — `BestHand.json` was not bumped, so `release.ps1` failed in CI. 1.0.4 contains the same fixes plus the version bump.)
