@@ -27,6 +27,13 @@
 -- record which code version generated them. Falls back to "unknown"
 -- if the .git directory isn't readable (e.g. installed from a zip).
 -------------------------------------------------------------------------
+-- Lovely captures stdout into its launch log, but Windows defaults
+-- to 4 KB block buffering for non-tty stdout — print() output sits
+-- in the C runtime buffer until it fills, so miss/capture lines lag
+-- the actual play by minutes (or appear only on game exit). Force
+-- line buffering so each print() lands in the lovely log immediately.
+pcall(function() io.stdout:setvbuf('line') end)
+
 local MOD_VERSION = 'unknown'
 do
   -- Try to read the git HEAD ref from the mod directory.
@@ -2680,8 +2687,26 @@ local function with_no_resolve(fn, ...)
     G.E_MANAGER.add_event = function() end
   end
 
+  -- Acrobat (×3 mult) and Dusk (retrigger) both check
+  -- `G.GAME.current_round.hands_left == 0` from inside their
+  -- joker_main / individual contexts. Balatro decrements hands_left
+  -- BEFORE evaluate_play fires the joker, so when the real play
+  -- happens the joker sees 0; at prediction time hands_left is still
+  -- the pre-play value. If predicting the final hand of the round
+  -- (hands_left == 1), simulate the decrement so Card:calculate_joker
+  -- sees the same state it will see in-game.
+  local saved_hands_left
+  if G and G.GAME and G.GAME.current_round
+      and G.GAME.current_round.hands_left == 1 then
+    saved_hands_left = 1
+    G.GAME.current_round.hands_left = 0
+  end
+
   local results = { pcall(fn, ...) }
 
+  if saved_hands_left then
+    G.GAME.current_round.hands_left = saved_hands_left
+  end
   if saved_add_event then G.E_MANAGER.add_event = saved_add_event end
   for k, v in pairs(saved) do _G[k] = v end
   if SMODS then SMODS.no_resolve = prev_resolve end
