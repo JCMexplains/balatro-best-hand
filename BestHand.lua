@@ -2371,6 +2371,9 @@ local function format_number(n)
 end
 
 local function card_label(card)
+  if card.ability and card.ability.name == 'Stone Card' then
+    return 'Stone'
+  end
   local rank = rank_names[card.base.id] or '?'
   local suit = suit_symbols[card.base.suit] or '?'
   return rank .. suit
