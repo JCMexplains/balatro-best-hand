@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.6 — 2026-05-06
+
+- F4 capture now retroactively grabs the most recent miss. Previously, players who only thought to enable capture *after* seeing a wrong prediction lost that hand permanently — F4-off skipped predict + compare entirely. The mod now always runs prediction and comparison; F4 only gates the disk write. While F4 is off, the latest miss is buffered in memory (single slot, newer overwrites older) and flushed to disk the moment F4 is toggled on. Buffer dies with the game.
+- Hot-path perf: `get_triggers` reads retrigger joker counts from the per-call precomputed bundle instead of building a fresh `joker_names` list every call; straight detection drops a 14-element scratch array; `eval_per_card_jokers`' Bloodstone fallback skips a per-card allocation for non-Blueprint/Brainstorm jokers; Lucky Cat / Space Joker scans gated on presence flags. No effect on scoring — verified against 135 captures + 1000 synthetic fixtures.
+
 ## 1.0.5 — 2026-05-06
 
 - Fix Blueprint (and Brainstorm) copying Supernova not getting the +1 pre-bump correction at the copy slot — vanilla `joker_main` reads `hands[name].played` pre-bump, so each copy was scoring one play short.
