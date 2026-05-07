@@ -2988,6 +2988,14 @@ SMODS.Keybind({
 local capture_enabled = (MOD_VERSION ~= 'unknown')
 local capture_dir = 'Mods/balatro-best-hand/best_hand_captures'
 
+-- Single-slot buffer for the most recent miss while capture is OFF.
+-- Lets a user who only thinks to press F4 *after* seeing a bad
+-- prediction still recover that hand — the F4 toggle flushes this
+-- to disk before resuming normal capture. Wiped on game quit
+-- (Lua state dies). Stays put across F4-off → F4-off-again cycles
+-- so a stale miss from earlier in the session is still recoverable.
+local pending_miss = nil
+
 -- Serialize a plain Lua value as a Lua literal. Not general-purpose:
 -- assumes scalars + nested tables of scalars, no cycles, no functions.
 local function serialize(v, indent)
@@ -3279,87 +3287,90 @@ if G.FUNCS and G.FUNCS.evaluate_play then
   G.FUNCS.evaluate_play = function(e)
     local fixture
     local t_start, t_single_done, prob_configs
-    if capture_enabled then
-      t_start = debug_timing and now_ms()
-      local ok, err = pcall(function()
-        local played, held = {}, {}
-        for i, c in ipairs(G.play.cards) do played[i] = c end
-        for i, c in ipairs(G.hand.cards) do held[i]   = c end
+    -- Always run prediction + comparison so we can surface the most
+    -- recent miss in the log even with capture disabled. F4 only
+    -- gates whether misses get written to disk; while F4 is off, the
+    -- latest miss is buffered in `pending_miss` so a user who toggles
+    -- F4 on after seeing a wrong prediction can still capture it.
+    t_start = debug_timing and now_ms()
+    local ok, err = pcall(function()
+      local played, held = {}, {}
+      for i, c in ipairs(G.play.cards) do played[i] = c end
+      for i, c in ipairs(G.hand.cards) do held[i]   = c end
 
-        fixture = {
-          mod_version = MOD_VERSION,
-          played = extract_card_list(played),
-          held   = extract_card_list(held),
-          jokers = extract_joker_list(G.jokers.cards),
-          game   = extract_game_state(),
-        }
+      fixture = {
+        mod_version = MOD_VERSION,
+        played = extract_card_list(played),
+        held   = extract_card_list(held),
+        jokers = extract_joker_list(G.jokers.cards),
+        game   = extract_game_state(),
+      }
 
-        local hn = G.FUNCS.get_poker_hand_info(G.play.cards)
-        fixture.hand_name = hn
-        -- Must snapshot pre-evaluate_play: The Eye's check reads
-        -- played_this_round, which Balatro increments during
-        -- evaluate_play — a post-hook read would false-positive
-        -- on every Eye play.
-        fixture.debuffed_by_blind = is_hand_debuffed_by_blind(hn)
+      local hn = G.FUNCS.get_poker_hand_info(G.play.cards)
+      fixture.hand_name = hn
+      -- Must snapshot pre-evaluate_play: The Eye's check reads
+      -- played_this_round, which Balatro increments during
+      -- evaluate_play — a post-hook read would false-positive
+      -- on every Eye play.
+      fixture.debuffed_by_blind = is_hand_debuffed_by_blind(hn)
 
-        local _, score, _, _, prob_arities, range_events =
-          compute_predicted_score(played, held)
-        fixture.predicted_score = score
-        if debug_timing then t_single_done = now_ms() end
-        prob_arities = prob_arities or {}
-        range_events = range_events or {}
-        local n_prob = #prob_arities
+      local _, score, _, _, prob_arities, range_events =
+        compute_predicted_score(played, held)
+      fixture.predicted_score = score
+      if debug_timing then t_single_done = now_ms() end
+      prob_arities = prob_arities or {}
+      range_events = range_events or {}
+      local n_prob = #prob_arities
 
-        -- Enumerate every reachable score from the discrete product of
-        -- per-event outcomes (Lucky=3, Bloodstone=2) × each Misprint
-        -- integer in [min, max]. Bounded at 10k configs.
-        local range_total = 1
-        for _, iv in ipairs(range_events) do
-          range_total = range_total * (iv[2] - iv[1] + 1)
-        end
-        local prob_total = 1
-        for _, a in ipairs(prob_arities) do prob_total = prob_total * a end
-        local total_configs = prob_total * range_total
-        prob_configs = total_configs
+      -- Enumerate every reachable score from the discrete product of
+      -- per-event outcomes (Lucky=3, Bloodstone=2) × each Misprint
+      -- integer in [min, max]. Bounded at 10k configs.
+      local range_total = 1
+      for _, iv in ipairs(range_events) do
+        range_total = range_total * (iv[2] - iv[1] + 1)
+      end
+      local prob_total = 1
+      for _, a in ipairs(prob_arities) do prob_total = prob_total * a end
+      local total_configs = prob_total * range_total
+      prob_configs = total_configs
 
-        if (n_prob + #range_events) > 0 and total_configs <= 10000 then
-          local possible, seen = {}, {}
-          for pmask = 0, prob_total - 1 do
-            local pcfg, tmp = {}, pmask
-            for i, a in ipairs(prob_arities) do
-              pcfg[i] = tmp % a
-              tmp = math.floor(tmp / a)
+      if (n_prob + #range_events) > 0 and total_configs <= 10000 then
+        local possible, seen = {}, {}
+        for pmask = 0, prob_total - 1 do
+          local pcfg, tmp = {}, pmask
+          for i, a in ipairs(prob_arities) do
+            pcfg[i] = tmp % a
+            tmp = math.floor(tmp / a)
+          end
+          for ridx = 0, range_total - 1 do
+            local rcfg, rtmp = {}, ridx
+            for i, iv in ipairs(range_events) do
+              local span = iv[2] - iv[1] + 1
+              rcfg[i] = iv[1] + (rtmp % span)
+              rtmp = math.floor(rtmp / span)
             end
-            for ridx = 0, range_total - 1 do
-              local rcfg, rtmp = {}, ridx
-              for i, iv in ipairs(range_events) do
-                local span = iv[2] - iv[1] + 1
-                rcfg[i] = iv[1] + (rtmp % span)
-                rtmp = math.floor(rtmp / span)
-              end
-              local _, s = compute_predicted_score(
-                played, held, pcfg, rcfg)
-              if not seen[s] then
-                seen[s] = true
-                possible[#possible + 1] = s
-              end
+            local _, s = compute_predicted_score(
+              played, held, pcfg, rcfg)
+            if not seen[s] then
+              seen[s] = true
+              possible[#possible + 1] = s
             end
           end
-          table.sort(possible)
-          fixture.possible_scores = possible
         end
-      end)
-      if not ok then
-        print('[BestHand] capture pre-error: ' .. tostring(err))
+        table.sort(possible)
+        fixture.possible_scores = possible
       end
-      if debug_timing and t_start then
-        local t_end = now_ms()
-        local t_single = (t_single_done or t_end) - t_start
-        local t_prob = t_end - (t_single_done or t_end)
-        print(string.format(
-          '[BestHand][TIMING] evaluate_play predict: %.2f ms single + %.2f ms prob (%d configs)',
-          t_single, t_prob, prob_configs or 0))
-      end
+    end)
+    if not ok then
+      print('[BestHand] capture pre-error: ' .. tostring(err))
+    end
+    if debug_timing and t_start then
+      local t_end = now_ms()
+      local t_single = (t_single_done or t_end) - t_start
+      local t_prob = t_end - (t_single_done or t_end)
+      print(string.format(
+        '[BestHand][TIMING] evaluate_play predict: %.2f ms single + %.2f ms prob (%d configs)',
+        t_single, t_prob, prob_configs or 0))
     end
 
     original_evaluate_play(e)
@@ -3433,7 +3444,14 @@ if G.FUNCS and G.FUNCS.evaluate_play then
         end
 
         if fixture.predicted_score and not matched then
-          write_capture(fixture)
+          if capture_enabled then
+            write_capture(fixture)
+          else
+            -- F4 is off — buffer for retroactive flush. Single slot:
+            -- a newer miss replaces an older one, so users see the
+            -- most recently surprising hand when they finally hit F4.
+            pending_miss = fixture
+          end
         end
       end)
       if not ok then
@@ -3453,6 +3471,11 @@ SMODS.Keybind({
     capture_enabled = not capture_enabled
     if capture_enabled then
       print('[BestHand] capture ENABLED — each played hand will be recorded')
+      if pending_miss then
+        print('[BestHand] flushing buffered miss from before F4 was on')
+        write_capture(pending_miss)
+        pending_miss = nil
+      end
     else
       print('[BestHand] capture disabled')
     end
