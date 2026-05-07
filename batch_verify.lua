@@ -44,16 +44,35 @@ local function list_files(dir)
   return out
 end
 
-local files = list_files(captures_dir)
+-- crash_*.lua are pre-scoring fallback dumps written when the game
+-- crashes natively inside evaluate_play. They have predicted_score
+-- but no actual_score, so they can't be verified — skip them.
+local function basename(p) return p:match('([^/\\]+)$') or p end
+local raw = list_files(captures_dir)
+local files, skipped_crash = {}, 0
+for _, f in ipairs(raw) do
+  if basename(f):match('^crash_') then
+    skipped_crash = skipped_crash + 1
+  else
+    files[#files+1] = f
+  end
+end
 if #files == 0 then
   print('No captures found in ' .. captures_dir)
+  if skipped_crash > 0 then
+    print(string.format(
+      '(%d crash dump%s skipped — no actual_score to verify against)',
+      skipped_crash, skipped_crash == 1 and '' or 's'))
+  end
   os.exit(1)
 end
 
+if skipped_crash > 0 then
+  print(string.format('Skipping %d crash dump%s (no actual_score)',
+    skipped_crash, skipped_crash == 1 and '' or 's'))
+end
 print(string.format('Verifying %d captures from %s', #files, captures_dir))
 print()
-
-local function basename(p) return p:match('([^/\\]+)$') or p end
 
 local strict, via_variance, miss = 0, 0, 0
 local misses = {}

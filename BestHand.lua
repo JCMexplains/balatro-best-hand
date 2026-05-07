@@ -3271,7 +3271,12 @@ local function compute_predicted_score(played, held, prob_config, range_config)
     score_combo, played, all, prob_config, range_config)
 end
 
-local function write_capture(fixture)
+-- Returns the absolute path on success, nil on failure. The caller is
+-- responsible for any user-facing print — `prefix` distinguishes normal
+-- miss captures from pre-scoring crash dumps, and the appropriate log
+-- line differs.
+local function write_capture(fixture, prefix)
+  prefix = prefix or 'capture'
   if love and love.filesystem and love.filesystem.createDirectory then
     love.filesystem.createDirectory(capture_dir)
   end
@@ -3279,7 +3284,7 @@ local function write_capture(fixture)
   local stamp = os.date('%Y%m%d_%H%M%S')
   local path
   for i = 1, 1000 do
-    local try = base .. '/capture_' .. stamp .. '_' .. i .. '.lua'
+    local try = base .. '/' .. prefix .. '_' .. stamp .. '_' .. i .. '.lua'
     local f = io.open(try, 'r')
     if not f then
       path = try
@@ -3300,7 +3305,7 @@ local function write_capture(fixture)
   f:write('-- BestHand capture fixture — auto-generated, safe to delete\n')
   f:write('return ' .. serialize(fixture) .. '\n')
   f:close()
-  print('[BestHand] captured: ' .. path)
+  return path
 end
 
 -- Wrap G.FUNCS.evaluate_play. Capture PRE-scoring so the fixture matches
@@ -3312,6 +3317,7 @@ if G.FUNCS and G.FUNCS.evaluate_play then
   local original_evaluate_play = G.FUNCS.evaluate_play
   G.FUNCS.evaluate_play = function(e)
     local fixture
+    local crash_dump_path
     local t_start, t_single_done, prob_configs
     -- Always run prediction + comparison so we can surface the most
     -- recent miss in the log even with capture disabled. F4 only
@@ -3399,7 +3405,28 @@ if G.FUNCS and G.FUNCS.evaluate_play then
         t_single, t_prob, prob_configs or 0))
     end
 
+    -- Pre-scoring fallback dump. If Balatro crashes natively inside
+    -- original_evaluate_play (no Lua traceback, no SMODS error handler,
+    -- no post-pcall), the fixture is the only diagnostic we have. Write
+    -- it now with crashed=true; delete it after the original returns.
+    -- Gated on F4 — same trade-off as the regular miss capture.
+    if fixture and capture_enabled then
+      local dump_ok, dump_err = pcall(function()
+        fixture.crashed = true
+        crash_dump_path = write_capture(fixture, 'crash')
+        fixture.crashed = nil
+      end)
+      if not dump_ok then
+        print('[BestHand] crash-dump write failed: ' .. tostring(dump_err))
+      end
+    end
+
     original_evaluate_play(e)
+
+    if crash_dump_path then
+      os.remove(crash_dump_path)
+      crash_dump_path = nil
+    end
 
     if fixture then
       local ok, err = pcall(function()
@@ -3471,7 +3498,8 @@ if G.FUNCS and G.FUNCS.evaluate_play then
 
         if fixture.predicted_score and not matched then
           if capture_enabled then
-            write_capture(fixture)
+            local p = write_capture(fixture)
+            if p then print('[BestHand] captured: ' .. p) end
           else
             -- F4 is off — buffer for retroactive flush. Single slot:
             -- a newer miss replaces an older one, so users see the
@@ -3499,7 +3527,8 @@ SMODS.Keybind({
       print('[BestHand] capture ENABLED — each played hand will be recorded')
       if pending_miss then
         print('[BestHand] flushing buffered miss from before F4 was on')
-        write_capture(pending_miss)
+        local p = write_capture(pending_miss)
+        if p then print('[BestHand] captured: ' .. p) end
         pending_miss = nil
       end
     else
