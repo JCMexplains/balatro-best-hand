@@ -42,6 +42,10 @@ The scoring pipeline mirrors Balatro's own phase order: pre-pass scaling, then p
 
 MIT — see [LICENSE](LICENSE).
 
+## Support
+
+If this mod has saved you from a misplay or two and you'd like to say thanks, [ko-fi.com/jcmexplains](https://ko-fi.com/jcmexplains) is much appreciated — entirely optional, the mod is and stays free.
+
 ## Credits
 
 Developed with assistance from Claude (Anthropic).

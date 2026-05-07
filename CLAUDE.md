@@ -27,21 +27,21 @@ All offline tools require `balatro_src/` (a local extraction of Balatro's Lua so
 
 The core insight: **scoring is dispatched through Balatro's own `Card:calculate_joker`** for every joker, in three phases that mirror the game's evaluation order (`state_events.lua` / `card.lua` in `balatro_src/`):
 
-1. **`run_before_pass`** (BestHand.lua:974) — fires `context.before` on each joker. Scaling jokers (Green Joker, Spare Trousers, Ride the Bus, Square Joker, Runner, Obelisk, Hologram, Madness, Glass Joker) bump their `ability.*` here so `joker_main` reads the post-bump value. Snapshots are taken so analysis is non-destructive; `before_deny` lists jokers whose side effects can't be rolled back (DNA, Vampire, Midas Mask, Space Joker, To Do List) — these keep stale `ability.*` values.
-2. **`eval_per_card_jokers`** (BestHand.lua:868) — for each scoring card L→R (with retriggers), fires `context.individual`. Card enhancements, editions, seals, and per-card jokers are resolved here.
-3. **`eval_flat_jokers`** (BestHand.lua:941) — fires `context.joker_main` per joker L→R, applying their edition bonus (additive before Xmult, polychrome after). `joker_main_deny` lists jokers with unrollable side effects (Misprint, Vagabond, Superposition, Seance, Matador) — these fall through to hardcoded branches.
+1. **`run_before_pass`** (BestHand.lua:1498) — fires `context.before` on each joker. Scaling jokers (Green Joker, Spare Trousers, Ride the Bus, Square Joker, Runner, Obelisk, Hologram, Madness, Glass Joker) bump their `ability.*` here so `joker_main` reads the post-bump value. Snapshots are taken so analysis is non-destructive; `before_deny` lists jokers whose side effects can't be rolled back (DNA, Vampire, Midas Mask, Space Joker, To Do List) — these keep stale `ability.*` values.
+2. **`eval_per_card_jokers`** (BestHand.lua:1366) — for each scoring card L→R (with retriggers), fires `context.individual`. Card enhancements, editions, seals, and per-card jokers are resolved here.
+3. **`eval_flat_jokers`** (BestHand.lua:1465) — fires `context.joker_main` per joker L→R, applying their edition bonus (additive before Xmult, polychrome after). `joker_main_deny` lists jokers with unrollable side effects (Misprint, Vagabond, Superposition, Seance, Matador) — these fall through to hardcoded branches.
 
-Phase gates `has_before_branch` and `has_individual_branch` (BestHand.lua:248, :264) skip the real dispatch entirely when no present joker hits that phase — saves N snapshots + N pcalls per combo (~218 combos per F2 press).
+Phase gates `has_before_branch` and `has_individual_branch` (BestHand.lua:267, :283) skip the real dispatch entirely when no present joker hits that phase — saves N snapshots + N pcalls per combo (~218 combos per F2 press).
 
-`score_combo` (BestHand.lua:1020) is the per-combo scorer. `analyze_hand` (BestHand.lua:1619) is the F2 entry point — it enumerates k-subsets of the hand, calls `score_combo` for each, and (when an order-sensitive joker is present per `build_ordering_flags` / `needs_ordering`) tries every permutation of the scoring cards to find the optimal arrangement.
+`score_combo` (BestHand.lua:1557) is the per-combo scorer. `analyze_hand` (BestHand.lua:2836) is the F2 entry point — it enumerates k-subsets of the hand, calls `score_combo` for each, and (when an order-sensitive joker is present per `build_ordering_flags` / `needs_ordering`) tries every permutation of the scoring cards to find the optimal arrangement.
 
-`snapshot_ability` / `restore_before_pass` (BestHand.lua:188, :998) guarantee that calling `calculate_joker` during read-only analysis never corrupts game state — even if a joker mutates `self.ability.*`, it's rolled back. One level of nesting (`ability.extra`) is handled.
+`snapshot_ability` / `restore_before_pass` (BestHand.lua:207, :1532) guarantee that calling `calculate_joker` during read-only analysis never corrupts game state — even if a joker mutates `self.ability.*`, it's rolled back. One level of nesting (`ability.extra`) is handled.
 
 Probabilistic jokers (Lucky Card, Bloodstone) use **expected value** in the primary prediction. F4 captures enumerate the cartesian product of probabilistic outcomes (boolean events × Misprint integer ranges) up to 10,000 configurations.
 
 ## Architecture — fixture capture and offline replay
 
-`G.FUNCS.evaluate_play` is wrapped (BestHand.lua:2140) to capture every played hand **pre-scoring**. When the predicted score doesn't match the actual, a Lua-literal capture file is written to `<save>/Mods/balatro-best-hand/best_hand_captures/capture_<timestamp>_<n>.lua` with the played cards, held cards, jokers, relevant `G.GAME` state, the predicted score, and the actual. F4 toggles capture on/off — default is ON in dev installs (auto-detected via readable `.git/HEAD`) and OFF in released zips. F5 toggles debug timing.
+`G.FUNCS.evaluate_play` is wrapped (BestHand.lua:3311) to capture every played hand **pre-scoring**. When the predicted score doesn't match the actual, a Lua-literal capture file is written to `<save>/Mods/balatro-best-hand/best_hand_captures/capture_<timestamp>_<n>.lua` with the played cards, held cards, jokers, relevant `G.GAME` state, the predicted score, and the actual. F4 toggles capture on/off — default is ON in dev installs (auto-detected via readable `.git/HEAD`) and OFF in released zips. F5 toggles debug timing.
 
 Captures are loadable with `dofile` and replayable through `batch_verify.lua` / `trace_one.lua` / the oracle harness.
 
