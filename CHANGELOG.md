@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.7 — 2026-05-06
+
+- Fix Stone cards displaying as their underlying rank/suit (e.g. "6s") in the F2 Best Hands output. Stone cards retain their pre-conversion `base.id` / `base.suit` underneath the enhancement, and `card_label` was reading those directly. Scoring was unaffected — Stones now display as `Stone`.
+
 ## 1.0.6 — 2026-05-06
 
 - F4 capture now retroactively grabs the most recent miss. Previously, players who only thought to enable capture *after* seeing a wrong prediction lost that hand permanently — F4-off skipped predict + compare entirely. The mod now always runs prediction and comparison; F4 only gates the disk write. While F4 is off, the latest miss is buffered in memory (single slot, newer overwrites older) and flushed to disk the moment F4 is toggled on. Buffer dies with the game.
