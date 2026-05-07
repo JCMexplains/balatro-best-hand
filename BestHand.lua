@@ -564,11 +564,12 @@ end
 -- e.g. Red Seal + Hack on a 3 → 1 base + 1 + 1 = 3 total triggers.
 -- `card_index` is the 1-based position in the scoring card list.
 -- `is_held` selects held-in-hand retrigger sources (Mime, Red Seal).
--- `resolved` is the Blueprint/Brainstorm-resolved joker list from
--- resolve_jokers(). When provided, retrigger detection uses resolved
--- names so Blueprint copies of retrigger jokers are counted.
+-- `precomputed` is the per-F2-call bundle from build_combo_precomputed
+-- with retrigger joker counts (hack_count, sock_buskin_count, etc.).
+-- Multiple instances compound — Blueprint copies of retrigger jokers
+-- are already folded into the resolved list these counts come from.
 -------------------------------------------------------------------------
-local function get_triggers(card, card_index, is_held, pareidolia, resolved)
+local function get_triggers(card, card_index, is_held, pareidolia, precomputed)
   local triggers = 1 -- base: every card fires at least once
 
   -- Red Seal: +1 retrigger (works on both played and held cards)
@@ -576,70 +577,56 @@ local function get_triggers(card, card_index, is_held, pareidolia, resolved)
     triggers = triggers + 1
   end
 
-  -- Use the resolved joker list if available (handles Blueprint/Brainstorm
-  -- copies of retrigger jokers). Fall back to raw G.jokers.cards for
-  -- backward compatibility with standalone trace tools.
-  local joker_names = nil
-  if resolved then
-    joker_names = {}
-    for _, j in ipairs(resolved) do
-      joker_names[#joker_names + 1] = j.name
-    end
-  else
-    if not G.jokers or not G.jokers.cards then return triggers end
-    joker_names = {}
-    for _, joker in ipairs(G.jokers.cards) do
-      if not joker.debuff then
-        joker_names[#joker_names + 1] =
-          (joker.ability and joker.ability.name) or ''
-      end
-    end
+  if not precomputed then return triggers end
+
+  if is_held then
+    -- Retrigger jokers for held-in-hand cards (Mime only).
+    return triggers + precomputed.mime_count
   end
 
   -- Stone Cards override Card:get_id to return a random negative
   -- value, so Hack's 2-5 check and Sock and Buskin's face-card check
   -- never see them as a target. Skip rank-based retriggers here.
   local is_stone = card.ability and card.ability.name == 'Stone Card'
+  local id = card.base.id
 
-  if not is_held then
-    -- Retrigger jokers for played/scoring cards
-    for _, name in ipairs(joker_names) do
-      if name == 'Hack' then
-        -- +1 retrigger for cards ranked 2, 3, 4, or 5
-        local id = card.base.id
-        if not is_stone and id >= 2 and id <= 5 then triggers = triggers + 1 end
-      elseif name == 'Sock and Buskin' then
-        -- +1 retrigger for face cards (J=11, Q=12, K=13).
-        -- Pareidolia makes every card count as face, including Stones
-        -- (Card:is_face short-circuits on Pareidolia before any id
-        -- check). Without Pareidolia, Stones never qualify — their
-        -- get_id returns a negative random.
-        local is_face = pareidolia
-          or (not is_stone and card.base.id >= 11 and card.base.id <= 13)
-        if is_face then triggers = triggers + 1 end
-      elseif name == 'Hanging Chad' then
-        -- +2 retriggers on the first scoring card
-        if card_index == 1 then triggers = triggers + 2 end
-      elseif name == 'Dusk' then
-        -- +1 retrigger on the final hand of the round.
-        -- The game decrements hands_left before scoring, so
-        -- "last hand" is hands_left == 0 at evaluation time.
-        local hands_left = (G.GAME.current_round
-          and G.GAME.current_round.hands_left) or 0
-        if hands_left == 0 then triggers = triggers + 1 end
-      elseif name == 'Seltzer' then
-        -- +1 retrigger for all scored cards
-        triggers = triggers + 1
-      end
-    end
-  else
-    -- Retrigger jokers for held-in-hand cards
-    for _, name in ipairs(joker_names) do
-      if name == 'Mime' then
-        triggers = triggers + 1
-      end
+  -- Hack: +1 per copy for ranks 2-5
+  if precomputed.hack_count > 0
+    and not is_stone and id >= 2 and id <= 5 then
+    triggers = triggers + precomputed.hack_count
+  end
+
+  -- Sock and Buskin: +1 per copy for face cards.
+  -- Pareidolia makes every card count as face, including Stones
+  -- (Card:is_face short-circuits on Pareidolia before any id check).
+  -- Without Pareidolia, Stones never qualify — their get_id returns
+  -- a negative random.
+  if precomputed.sock_buskin_count > 0 then
+    local is_face = pareidolia
+      or (not is_stone and id >= 11 and id <= 13)
+    if is_face then
+      triggers = triggers + precomputed.sock_buskin_count
     end
   end
+
+  -- Hanging Chad: +2 per copy on the first scoring card
+  if precomputed.hanging_chad_count > 0 and card_index == 1 then
+    triggers = triggers + 2 * precomputed.hanging_chad_count
+  end
+
+  -- Dusk: +1 per copy on the final hand of the round. The game
+  -- decrements hands_left before scoring, so "last hand" is
+  -- hands_left == 0 at evaluation time.
+  if precomputed.dusk_count > 0 then
+    local hands_left = (G.GAME.current_round
+      and G.GAME.current_round.hands_left) or 0
+    if hands_left == 0 then
+      triggers = triggers + precomputed.dusk_count
+    end
+  end
+
+  -- Seltzer: +1 per copy for all scored cards
+  triggers = triggers + precomputed.seltzer_count
 
   return triggers
 end
@@ -799,27 +786,15 @@ local function fast_evaluate_poker_hand(cards, has_smeared, four_fingers, has_sh
   local straight_min = four_fingers and 4 or 5
   local has_straight = false
   do
-    local present_1  = rank_count[14] and true or false  -- ace-low
-    local present_2  = rank_count[2]  and true or false
-    local present_3  = rank_count[3]  and true or false
-    local present_4  = rank_count[4]  and true or false
-    local present_5  = rank_count[5]  and true or false
-    local present_6  = rank_count[6]  and true or false
-    local present_7  = rank_count[7]  and true or false
-    local present_8  = rank_count[8]  and true or false
-    local present_9  = rank_count[9]  and true or false
-    local present_10 = rank_count[10] and true or false
-    local present_11 = rank_count[11] and true or false
-    local present_12 = rank_count[12] and true or false
-    local present_13 = rank_count[13] and true or false
-    local present_14 = rank_count[14] and true or false
-    local p = {present_1, present_2, present_3, present_4, present_5,
-      present_6, present_7, present_8, present_9, present_10,
-      present_11, present_12, present_13, present_14}
+    -- Alias ace-low (id 1) to the ace-high count so the j=1..14 walk
+    -- can read rank_count[j] directly. Safe to mutate here: rank_count
+    -- is local to fast_evaluate_poker_hand and is not consulted again
+    -- after this block.
+    if rank_count[14] then rank_count[1] = rank_count[14] end
     local run = 0
     local skipped = false
     for j = 1, 14 do
-      if p[j] then
+      if rank_count[j] then
         run = run + 1
         skipped = false
         if run >= straight_min then has_straight = true; break end
@@ -1231,6 +1206,21 @@ local function build_combo_precomputed(resolved)
   -- scoring_hand cards' ability via set_ability — unrollable. We
   -- simulate the conversion in score_combo's enhancement read.
   local has_midas_mask = false
+  -- Retrigger joker counts. Hoisted out of get_triggers so the
+  -- per-card / per-trigger inner loop is O(1) lookups instead of
+  -- a fresh joker_names list build + linear scan per call.
+  -- Multiple instances (e.g. via Blueprint copies) compound, same
+  -- as the original loop's behavior.
+  local hack_count = 0
+  local sock_buskin_count = 0
+  local hanging_chad_count = 0
+  local dusk_count = 0
+  local seltzer_count = 0
+  local mime_count = 0
+  -- Cheap presence flags so score_combo can skip its Lucky Cat /
+  -- Space Joker scans when neither joker is in play.
+  local has_lucky_cat = false
+  local has_space = false
   for _, j in ipairs(resolved) do
     local n = j.name
     if n == 'Pareidolia' then
@@ -1255,6 +1245,22 @@ local function build_combo_precomputed(resolved)
       has_shortcut = true
     elseif n == 'Midas Mask' then
       has_midas_mask = true
+    elseif n == 'Hack' then
+      hack_count = hack_count + 1
+    elseif n == 'Sock and Buskin' then
+      sock_buskin_count = sock_buskin_count + 1
+    elseif n == 'Hanging Chad' then
+      hanging_chad_count = hanging_chad_count + 1
+    elseif n == 'Dusk' then
+      dusk_count = dusk_count + 1
+    elseif n == 'Seltzer' then
+      seltzer_count = seltzer_count + 1
+    elseif n == 'Mime' then
+      mime_count = mime_count + 1
+    elseif n == 'Lucky Cat' then
+      has_lucky_cat = true
+    elseif n == 'Space Joker' then
+      has_space = true
     end
     if has_before_branch[n] then run_before = true end
     if has_individual_branch[n] then
@@ -1278,6 +1284,14 @@ local function build_combo_precomputed(resolved)
     has_four_fingers    = has_four_fingers,
     has_shortcut        = has_shortcut,
     has_midas_mask      = has_midas_mask,
+    hack_count          = hack_count,
+    sock_buskin_count   = sock_buskin_count,
+    hanging_chad_count  = hanging_chad_count,
+    dusk_count          = dusk_count,
+    seltzer_count       = seltzer_count,
+    mime_count          = mime_count,
+    has_lucky_cat       = has_lucky_cat,
+    has_space           = has_space,
   }
 end
 
@@ -1406,7 +1420,16 @@ local function eval_per_card_jokers(
         -- deny-listed jokers (8 Ball, Business Card, Golden Ticket,
         -- Rough Gem, Hiker, Lucky Cat, Wee Joker) either have their
         -- contribution handled elsewhere or don't affect score in EV.
-        local target = resolve_copy_target(jokers, idx, {}) or joker.ability
+        --
+        -- For non-copy jokers, resolve_copy_target returns
+        -- joker.ability unchanged (resolve_copy_target's else branch).
+        -- Skip the {} allocation + recursion in that case.
+        local target
+        if name == 'Blueprint' or name == 'Brainstorm' then
+          target = resolve_copy_target(jokers, idx, {}) or joker.ability
+        else
+          target = joker.ability
+        end
         if target.name == 'Bloodstone' then
           if suit_matches(card, 'Hearts') then
             state.prob_idx = state.prob_idx + 1
@@ -1683,7 +1706,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- and resolved entries share the underlying Lucky Cat ability table
   -- so a single bump propagates to every copy automatically.
   local lucky_cats = nil
-  if G.jokers and G.jokers.cards then
+  if precomputed.has_lucky_cat and G.jokers and G.jokers.cards then
     for _, j in ipairs(G.jokers.cards) do
       if j.ability and j.ability.name == 'Lucky Cat' and not j.debuff then
         lucky_cats = lucky_cats or {}
@@ -1710,7 +1733,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- would each get an additional roll in vanilla, but this isn't
   -- enumerated — rare enough to ignore for now.)
   local space_count = 0
-  if G.jokers and G.jokers.cards then
+  if precomputed.has_space and G.jokers and G.jokers.cards then
     for _, j in ipairs(G.jokers.cards) do
       if j.ability and j.ability.name == 'Space Joker' and not j.debuff then
         space_count = space_count + 1
@@ -1776,7 +1799,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   local scoring_dollars = 0
   for idx, card in ipairs(scoring) do
     if not card.debuff then
-      local triggers = get_triggers(card, idx, false, pareidolia, resolved)
+      local triggers = get_triggers(card, idx, false, pareidolia, precomputed)
       if card.seal == 'Gold' then
         scoring_dollars = scoring_dollars + 3 * triggers
       end
@@ -2000,7 +2023,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
       or (has_shoot_moon and is_queen) or has_held_individual_joker) then
       return
     end
-    local triggers = get_triggers(card, 0, true, pareidolia, resolved)
+    local triggers = get_triggers(card, 0, true, pareidolia, precomputed)
     for _ = 1, triggers do
       -- Steel Card enhancement: x1.5 mult per trigger. Steel fires
       -- from the card's own enhancement evaluation (before any joker
@@ -2282,7 +2305,7 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
         for idx, c in ipairs(scoring) do
           if c.base.id == 2 and not c.debuff then
             twos_triggers = twos_triggers
-              + get_triggers(c, idx, false, pareidolia, resolved)
+              + get_triggers(c, idx, false, pareidolia, precomputed)
           end
         end
         chips = chips + (extra.chip_mod or 8) * twos_triggers
