@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.8 — 2026-05-07
+
+- Fix Acrobat (×3 mult) and Dusk (retrigger all played cards) being skipped on the final hand of the round. Both jokers gate on `G.GAME.current_round.hands_left == 0`, but Balatro decrements `hands_left` *before* `evaluate_play` fires; at prediction time it still holds the pre-play value, so the condition failed and the predictor under-scored the last play. The analysis path now simulates the decrement when `hands_left == 1`.
+- Capture a pre-scoring fixture when `evaluate_play` is invoked, so native crashes inside Balatro / SDL2 / love.dll (which bypass SMODS's `love.errorhandler` and leave no traceback in the lovely log) leave a `crash_<ts>_N.lua` behind with the exact inputs that triggered the fault. The file is deleted on normal return; only a true crash preserves it. `batch_verify.lua` ignores `crash_*.lua` since they have no `actual_score`.
+- Force line buffering on stdout at mod load. Windows defaults to 4 KB block buffering for non-tty output, so miss / capture / F4-toggle messages could sit in the C runtime buffer for minutes (or until game exit) before reaching the lovely log. They now flush per line.
+
 ## 1.0.7 — 2026-05-06
 
 - Fix Stone cards displaying as their underlying rank/suit (e.g. "6s") in the F2 Best Hands output. Stone cards retain their pre-conversion `base.id` / `base.suit` underneath the enhancement, and `card_label` was reading those directly. Scoring was unaffected — Stones now display as `Stone`.
