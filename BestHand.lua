@@ -621,9 +621,10 @@ local function get_triggers(card, card_index, is_held, pareidolia, precomputed)
     triggers = triggers + 2 * precomputed.hanging_chad_count
   end
 
-  -- Dusk: +1 per copy on the final hand of the round. The game
-  -- decrements hands_left before scoring, so "last hand" is
-  -- hands_left == 0 at evaluation time.
+  -- Dusk: +1 per copy when the joker reads hands_left == 0. Balatro
+  -- doesn't decrement hands_left until after evaluate_play returns,
+  -- so this only fires for fixtures that already record hands_left=0
+  -- (e.g. when a tag/blind has zeroed it pre-play).
   if precomputed.dusk_count > 0 then
     local hands_left = (G.GAME.current_round
       and G.GAME.current_round.hands_left) or 0
@@ -2687,26 +2688,8 @@ local function with_no_resolve(fn, ...)
     G.E_MANAGER.add_event = function() end
   end
 
-  -- Acrobat (×3 mult) and Dusk (retrigger) both check
-  -- `G.GAME.current_round.hands_left == 0` from inside their
-  -- joker_main / individual contexts. Balatro decrements hands_left
-  -- BEFORE evaluate_play fires the joker, so when the real play
-  -- happens the joker sees 0; at prediction time hands_left is still
-  -- the pre-play value. If predicting the final hand of the round
-  -- (hands_left == 1), simulate the decrement so Card:calculate_joker
-  -- sees the same state it will see in-game.
-  local saved_hands_left
-  if G and G.GAME and G.GAME.current_round
-      and G.GAME.current_round.hands_left == 1 then
-    saved_hands_left = 1
-    G.GAME.current_round.hands_left = 0
-  end
-
   local results = { pcall(fn, ...) }
 
-  if saved_hands_left then
-    G.GAME.current_round.hands_left = saved_hands_left
-  end
   if saved_add_event then G.E_MANAGER.add_event = saved_add_event end
   for k, v in pairs(saved) do _G[k] = v end
   if SMODS then SMODS.no_resolve = prev_resolve end
