@@ -1593,14 +1593,14 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
   -- Boss-blind hand debuff (The Eye / The Mouth): entire score is
   -- zeroed before Balatro runs Phase 1, so short-circuit here.
   if is_hand_debuffed_by_blind(hand_name) then
-    return hand_name, 0, {}, false, 0, {}
+    return hand_name, 0, {}, false, {}, {}
   end
 
   -- The Psychic boss blind: must play exactly 5 cards or score is 0.
   if G.GAME and G.GAME.blind and G.GAME.blind.name == 'The Psychic'
     and not (G.GAME.blind.disabled)
     and #cards < 5 then
-    return hand_name, 0, {}, false, 0, {}
+    return hand_name, 0, {}, false, {}, {}
   end
 
   local chips = hand_info.chips
