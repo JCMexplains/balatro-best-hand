@@ -5,6 +5,7 @@
 *.swp
 .DS_Store
 Thumbs.db
+__pycache__/
 
 # Runtime debug dumps
 card_dump.txt
