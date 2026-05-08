@@ -28,7 +28,7 @@ Scoring runs through Balatro's own per-joker scoring code in every phase, so eac
 - Scaling jokers (Green Joker, Spare Trousers, Ride the Bus, Square Joker, Runner, Obelisk, Hologram, Madness, Glass Joker, etc.) — their pre-pass bumps are applied before the rest of scoring reads them
 - Per-round state jokers (Ancient Joker, The Idol)
 - Face-down cards (flipped by The Wheel, The House, The Mark, The Fish) are never proposed for play, and held-in-hand effects (Baron, Shoot the Moon, Steel-held, Mime, Raised Fist) skip them — the predictor doesn't peek at cards you can't see
-- Boss blinds: The Eye and The Mouth (hand debuff → score zeroed), The Psychic (must play exactly 5 cards), The Arm (level penalty applied to base chips/mult), The Flint (base chips and mult halved)
+- Boss blinds: The Eye and The Mouth (hand debuff → score zeroed), The Psychic (must play exactly 5 cards), The Arm (level penalty applied to base chips/mult), The Flint (base chips and mult halved), Cerulean Bell (forced-selection card must appear in every proposed play)
 - **Card ordering advice**: when order matters — Hanging Chad, Photograph, Ancient Joker, Bloodstone, Triboulet, The Idol, or a card with Polychrome edition or Glass Card enhancement — F2 tries every permutation of the scoring cards and marks the best arrangement with `← drag scoring cards into this order`
 
 The scoring pipeline mirrors Balatro's own phase order: pre-pass scaling, then per-card effects (left to right, with retriggers), then held-in-hand effects, then flat joker effects with their edition bonuses.

@@ -861,11 +861,40 @@ local function fast_evaluate_poker_hand(cards, has_smeared, four_fingers, has_sh
   return hand_name, ph
 end
 
+local rank_names = {
+  [2] = '2', [3] = '3', [4] = '4', [5] = '5', [6] = '6',
+  [7] = '7', [8] = '8', [9] = '9', [10] = '10',
+  [11] = 'J', [12] = 'Q', [13] = 'K', [14] = 'A',
+}
+local suit_symbols = {
+  ['Hearts'] = 'h', ['Diamonds'] = 'd',
+  ['Clubs'] = 'c', ['Spades'] = 's',
+}
+
 -------------------------------------------------------------------------
 -- Check if The Flint boss blind is active (halves base chips and mult).
 -------------------------------------------------------------------------
 local function is_flint_active()
   return G.GAME and G.GAME.blind and G.GAME.blind.name == 'The Flint'
+end
+
+-------------------------------------------------------------------------
+-- Locate the Cerulean Bell forced card. Cerulean Bell sets
+-- ability.forced_selection on a single random card in G.hand at
+-- blind activation (blind.lua:583-584); cardarea.lua:220 then
+-- rejects unhighlight clicks on that card, so every play the user
+-- can submit must include it.
+--
+-- Returned independently of G.GAME.blind so the check stays correct
+-- if the blind is later disabled while the flag is still latched on
+-- a card — the game's UI keeps it locked either way.
+-------------------------------------------------------------------------
+local function find_forced_card()
+  if not G or not G.hand or not G.hand.cards then return nil end
+  for _, c in ipairs(G.hand.cards) do
+    if c.ability and c.ability.forced_selection then return c end
+  end
+  return nil
 end
 
 -------------------------------------------------------------------------
@@ -941,6 +970,16 @@ local function describe_blind_restriction(n_cards)
         n_cards)
     end
     return 'The Psychic: must play exactly 5 cards to score.'
+  elseif bname == 'Cerulean Bell' then
+    local forced = find_forced_card()
+    if forced and forced.base then
+      local r = rank_names[forced.base.id] or '?'
+      local s = suit_symbols[forced.base.suit] or '?'
+      return string.format(
+        'Cerulean Bell: %s is locked — every play must include it.',
+        r .. s)
+    end
+    return 'Cerulean Bell: one card is locked — every play must include it.'
   end
   return nil
 end
@@ -2352,18 +2391,11 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
 end
 
 -------------------------------------------------------------------------
--- Display helpers: convert cards to compact readable labels
+-- Display helpers: convert cards to compact readable labels.
+-- The two lookup tables are hoisted above their card_label / cards_label
+-- consumers so describe_blind_restriction (defined much earlier) can name
+-- the Cerulean Bell forced card without forward declarations.
 -------------------------------------------------------------------------
-local rank_names = {
-  [2] = '2', [3] = '3', [4] = '4', [5] = '5', [6] = '6',
-  [7] = '7', [8] = '8', [9] = '9', [10] = '10',
-  [11] = 'J', [12] = 'Q', [13] = 'K', [14] = 'A',
-}
-local suit_symbols = {
-  ['Hearts'] = 'h', ['Diamonds'] = 'd',
-  ['Clubs'] = 'c', ['Spades'] = 's',
-}
-
 -- Format an integer with commas as thousands separators (e.g. 1234567 → "1,234,567")
 -- For very large numbers, also append Balatro's exponent notation (e.g. "1.23e10").
 local function format_number(n)
@@ -2728,6 +2760,21 @@ local function analyze_hand_inner()
     if #cards == 0 then return nil end
   end
 
+  -- Cerulean Bell: a card with ability.forced_selection cannot be
+  -- unhighlighted, so every play the user can actually submit must
+  -- include it. Filter combo enumeration accordingly. If the
+  -- visible-only filter stripped the forced card (face-down forced
+  -- card — degenerate but possible), add it back: the player has no
+  -- choice but to play it.
+  local forced_card = find_forced_card()
+  if forced_card then
+    local in_cards = false
+    for _, c in ipairs(cards) do
+      if c == forced_card then in_cards = true; break end
+    end
+    if not in_cards then cards[#cards + 1] = forced_card end
+  end
+
   -- Resolve Blueprint/Brainstorm once and precompute the per-F2
   -- invariants (Pareidolia, Hiker, Baron, Shoot the Moon, Baseball
   -- Card) in one pass. Both `ord_flags` and `precomputed` are then
@@ -2746,6 +2793,17 @@ local function analyze_hand_inner()
     if #cards >= size then
       for _, combo in ipairs(combinations(cards, size)) do
         combo_n = combo_n + 1
+        -- Cerulean Bell: skip combos that omit the forced card —
+        -- they're not legal plays. Linear scan of <=5 elements,
+        -- so the cost is negligible vs score_combo.
+        local include = true
+        if forced_card then
+          include = false
+          for _, c in ipairs(combo) do
+            if c == forced_card then include = true; break end
+          end
+        end
+        if include then
         local name, score, scoring, used_ev =
           score_combo(combo, hand_cards, nil, nil, precomputed)
         -- Skip zero-score combos (boss-blind debuffs like The Eye /
@@ -2806,6 +2864,7 @@ local function analyze_hand_inner()
             default_score = default_score,
           }
         end
+        end -- if include
       end
     end
   end
@@ -3128,9 +3187,10 @@ local function extract_card(card)
       value   = base.value,
     },
     ability = {
-      name        = ability.name,
-      perma_bonus = ability.perma_bonus,
-      extra       = copy_scalars(ability.extra),
+      name             = ability.name,
+      perma_bonus      = ability.perma_bonus,
+      extra            = copy_scalars(ability.extra),
+      forced_selection = ability.forced_selection or nil,
     },
     edition = extract_edition(card.edition),
     seal    = card.seal,

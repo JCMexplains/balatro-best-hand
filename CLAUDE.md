@@ -54,5 +54,5 @@ Captures are loadable with `dofile` and replayable through `batch_verify.lua` / 
 
 ## Known limitations to keep in mind when editing
 
-- Most boss blinds are not modeled. Only The Eye, The Mouth, The Psychic, The Arm, The Flint are handled — see the README. Don't claim a fix for "unmodeled blind X" unless you actually add it.
+- Most boss blinds are not modeled. Only The Eye, The Mouth, The Psychic, The Arm, The Flint, Cerulean Bell are handled — see the README. Don't claim a fix for "unmodeled blind X" unless you actually add it.
 - Bloodstone in the real-dispatch path calls `pseudorandom()` directly, which can't resolve to an EV from inside `Card:calculate_joker`. EV mode computes it separately (×1.25 per Heart). See README "Known limitations".
