@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.9 — 2026-05-10
+
+- Model Cerulean Bell. F2 now filters combos to the forced-selection card so it only suggests plays you can actually submit. Captures persist `ability.forced_selection` so fixtures round-trip through the offline harness.
+- Fix `evaluate_play` wrapper crashing with "attempt to get length of a number value" on debuffed-by-blind plays and on Psychic with <5 cards. Both `score_combo` short-circuits now return `{}` for the prob_arities slot to match the normal-path contract.
+- Revert the 1.0.8 Acrobat/Dusk fix. The premise was wrong — Balatro decrements `hands_left` *after* `evaluate_play` returns, not before, so the simulation made Acrobat fire when the live game still skipped it, over-predicting by ×3 on any final-hand fixture with Acrobat. Acrobat/Dusk now fire iff `hands_left` is already 0 at scoring time (the original 1.0.7 behavior).
+- Drop the `(or [tied alternate hand])` suffix from F2 prediction output — it was cluttering the line.
+
 ## 1.0.8 — 2026-05-07
 
 - Fix Acrobat (×3 mult) and Dusk (retrigger all played cards) being skipped on the final hand of the round. Both jokers gate on `G.GAME.current_round.hands_left == 0`, but Balatro decrements `hands_left` *before* `evaluate_play` fires; at prediction time it still holds the pre-play value, so the condition failed and the predictor under-scored the last play. The analysis path now simulates the decrement when `hands_left == 1`.

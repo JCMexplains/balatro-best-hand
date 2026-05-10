@@ -3037,15 +3037,6 @@ SMODS.Keybind({
       if rank_dup_hint then
         line = line .. '\n     (' .. rank_dup_hint .. ')'
       end
-      -- Show tied alternatives if any
-      if r.alts and #r.alts > 0 then
-        local alt_labels = {}
-        for _, alt in ipairs(r.alts) do
-          alt_labels[#alt_labels + 1] = cards_label(alt.cards)
-        end
-        line = line .. '  (or '
-          .. table.concat(alt_labels, ', or ') .. ')'
-      end
       lines[#lines + 1] = line
     end
     for _, line in ipairs(lines) do print(line) end
