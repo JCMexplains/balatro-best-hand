@@ -3372,7 +3372,16 @@ end
 -- the original returns — the synchronous joker iteration has finished by
 -- then, but the deferred chip-ease events haven't reset chip_total yet,
 -- so SMODS.calculate_round_score() still has the true total.
-if G.FUNCS and G.FUNCS.evaluate_play then
+-- Install is wrapped in a function so a load-order race (mod dofile'd
+-- before state_events.lua defines G.FUNCS.evaluate_play) is recoverable
+-- via the Game:start_run retry below. Without that safety net, a single
+-- nil read at module load would silently disable the wrapper for the
+-- entire session — see the 2026-05-11 incident where F2 / F4 worked but
+-- the play-time hook never fired.
+local wrapper_installed = false
+local function install_evaluate_play_wrapper()
+  if wrapper_installed then return true end
+  if not (G.FUNCS and G.FUNCS.evaluate_play) then return false end
   local original_evaluate_play = G.FUNCS.evaluate_play
   G.FUNCS.evaluate_play = function(e)
     local fixture
@@ -3575,6 +3584,23 @@ if G.FUNCS and G.FUNCS.evaluate_play then
     -- Kick off the (one-time) JIT warmup. Idempotent; does nothing
     -- after the first successful run.
     schedule_warmup()
+  end
+  wrapper_installed = true
+  return true
+end
+
+if not install_evaluate_play_wrapper() then
+  print('[BestHand] WARNING: G.FUNCS.evaluate_play not available at mod load — deferring install to Game:start_run')
+  if Game and Game.start_run then
+    local original_start_run = Game.start_run
+    function Game:start_run(args)
+      if install_evaluate_play_wrapper() then
+        print('[BestHand] wrapper installed on deferred retry (Game:start_run)')
+      end
+      return original_start_run(self, args)
+    end
+  else
+    print('[BestHand] WARNING: Game.start_run also unavailable — wrapper cannot self-recover; report this to the BestHand mod author')
   end
 end
 

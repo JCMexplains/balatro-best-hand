@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.10 — 2026-05-11
+
+- Make the `G.FUNCS.evaluate_play` wrapper install survive a load-order race. The install was previously a top-level `if G.FUNCS and G.FUNCS.evaluate_play then …`; if SMODS dofile'd the mod before `state_events.lua` defined `evaluate_play`, the wrapper silently never installed for the entire session — F2 and F4 still worked, but no miss was ever logged or captured. The install is now wrapped in an idempotent function, prints a `WARNING` on first-attempt failure, and re-tries from a `Game:start_run` override before any scoring happens.
+
 ## 1.0.9 — 2026-05-10
 
 - Model Cerulean Bell. F2 now filters combos to the forced-selection card so it only suggests plays you can actually submit. Captures persist `ability.forced_selection` so fixtures round-trip through the offline harness.
