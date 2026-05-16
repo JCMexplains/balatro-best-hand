@@ -901,9 +901,13 @@ end
 -- Boss-blind hand debuffs that zero the entire score:
 --   The Eye   — each hand type can only score once per round.
 --   The Mouth — only one hand type may score per round.
--- Balatro increments played_this_round at the top of evaluate_play, so
--- analysis runs against the pre-increment snapshot: if any matching
--- hand already has played_this_round > 0, playing it again zeroes out.
+-- For The Eye we use played_this_round (incremented at the top of
+-- evaluate_play). For The Mouth we use G.GAME.blind.only_hand —
+-- played_this_round is incremented before the debuff zero, so a
+-- Mouth-debuffed play still bumps its counter, which would make
+-- subsequent valid plays of the original allowed hand wrongly
+-- appear debuffed. only_hand is only set on plays that weren't
+-- themselves debuffed by The Mouth.
 -------------------------------------------------------------------------
 local function is_hand_debuffed_by_blind(hand_name)
   if not G.GAME or not G.GAME.blind or G.GAME.blind.disabled then
@@ -915,11 +919,8 @@ local function is_hand_debuffed_by_blind(hand_name)
     local h = hands[hand_name]
     return h and (h.played_this_round or 0) > 0
   elseif bname == 'The Mouth' then
-    for name, info in pairs(hands) do
-      if name ~= hand_name and (info.played_this_round or 0) > 0 then
-        return true
-      end
-    end
+    local only = G.GAME.blind.only_hand
+    return only and only ~= hand_name
   end
   return false
 end
@@ -937,16 +938,13 @@ local function describe_blind_restriction(n_cards)
   local bname = G.GAME.blind.name
   local hands = G.GAME.hands or {}
   if bname == 'The Mouth' then
-    local allowed
-    for name, info in pairs(hands) do
-      if (info.played_this_round or 0) > 0 then
-        allowed = name
-        break
-      end
-    end
+    -- only_hand is Balatro's authoritative "first scoring play this
+    -- round" — see is_hand_debuffed_by_blind for why played_this_round
+    -- can't be used here.
+    local allowed = G.GAME.blind.only_hand
     if allowed then
       return string.format(
-        'The Mouth: only %s scores this round (already played).', allowed)
+        'The Mouth: only %s scores this round.', allowed)
     end
     return 'The Mouth: only the first hand type you play this round will score.'
   elseif bname == 'The Eye' then
@@ -3295,8 +3293,9 @@ local function extract_game_state()
 
   if G.GAME and G.GAME.blind then
     game.blind = {
-      name     = G.GAME.blind.name,
-      disabled = G.GAME.blind.disabled,
+      name      = G.GAME.blind.name,
+      disabled  = G.GAME.blind.disabled,
+      only_hand = G.GAME.blind.only_hand,
     }
   end
 
