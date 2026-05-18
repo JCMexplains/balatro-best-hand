@@ -2509,6 +2509,81 @@ local function describe_duplicate_order(cards)
   return table.concat(hints, '; ')
 end
 
+-- Describe the minimum reordering from the user's current scoring-card
+-- order (default_order) to the score-optimal order. Returns a short
+-- instruction like "move Kh to the front" or "swap Ah and Kh", or nil
+-- when the change is complex enough that listing the full target order
+-- is clearer. Inputs must be same-length lists of identical cards.
+local function describe_order_move(default_order, optimal_order)
+  local n = #default_order
+  if n ~= #optimal_order or n <= 1 then return nil end
+
+  -- Cards on the longest "already correctly ordered" subsequence of
+  -- the default order can stay put — everything else must move.
+  -- Brute O(n^2) LIS is fine: scoring cards are ≤ 5.
+  local target_idx = {}
+  for i, c in ipairs(optimal_order) do target_idx[c] = i end
+  local seq = {}
+  for i, c in ipairs(default_order) do seq[i] = target_idx[c] end
+
+  local len_arr, prev_arr = {}, {}
+  local best_end, best_len = 1, 1
+  for i = 1, n do
+    len_arr[i], prev_arr[i] = 1, 0
+    for j = 1, i - 1 do
+      if seq[j] < seq[i] and len_arr[j] + 1 > len_arr[i] then
+        len_arr[i] = len_arr[j] + 1
+        prev_arr[i] = j
+      end
+    end
+    if len_arr[i] > best_len then
+      best_len = len_arr[i]
+      best_end = i
+    end
+  end
+  local in_lis = {}
+  local idx = best_end
+  while idx > 0 do in_lis[idx] = true; idx = prev_arr[idx] end
+
+  -- Movers sorted by target position so the description reads
+  -- left-to-right in the optimal hand.
+  local movers = {}
+  for i = 1, n do
+    if not in_lis[i] then
+      movers[#movers + 1] = {
+        card = default_order[i], from = i, to = seq[i],
+      }
+    end
+  end
+  if #movers == 0 then return nil end
+  table.sort(movers, function(a, b) return a.to < b.to end)
+
+  local function pos_name(p)
+    if p == 1 then return 'the front' end
+    if p == n then return 'the end' end
+    return 'position ' .. p
+  end
+
+  -- Two movers that exchange positions read most naturally as a swap.
+  if #movers == 2
+    and movers[1].from == movers[2].to
+    and movers[2].from == movers[1].to then
+    return 'swap ' .. card_label(movers[1].card)
+      .. ' and ' .. card_label(movers[2].card)
+  end
+
+  -- Cap at 3 movers; beyond that the comma-list gets noisier than the
+  -- explicit target order already shown on the line above.
+  if #movers > 3 then return nil end
+
+  local parts = {}
+  for _, m in ipairs(movers) do
+    parts[#parts + 1] = 'move ' .. card_label(m.card)
+      .. ' to ' .. pos_name(m.to)
+  end
+  return table.concat(parts, ', then ')
+end
+
 -- Balatro's get_straight walks each rank in the run and adds EVERY card
 -- of that rank to scoring_hand, so a Straight (or Straight Flush / Royal
 -- Flush) played with two cards sharing a rank — A-K-Q-J-J or 3-4-4-5-6 —
@@ -3017,7 +3092,24 @@ SMODS.Keybind({
       -- hand WITHOUT reordering, the live prediction comes in
       -- well below the F2 number and looks like a prediction bug.
       if r.optimal_order then
-        line = line .. '  ← drag scoring cards into this order'
+        -- Build the current scoring order — cards from r.play (which
+        -- is in user-facing hand order) filtered to the scoring set,
+        -- so the diff describes drags from where the player actually
+        -- sees the cards.
+        local scoring_set = {}
+        for _, c in ipairs(r.cards) do scoring_set[c] = true end
+        local default_order = {}
+        for _, c in ipairs(r.play) do
+          if scoring_set[c] then
+            default_order[#default_order + 1] = c
+          end
+        end
+        local move_hint = describe_order_move(default_order, r.cards)
+        if move_hint then
+          line = line .. '  ← ' .. move_hint
+        else
+          line = line .. '  ← drag scoring cards into this order'
+        end
         if r.default_score and r.default_score < r.score then
           line = line .. ' (default order: ~'
             .. format_number(r.default_score) .. ')'
