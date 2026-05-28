@@ -385,6 +385,10 @@ local joker_main_no_fire = {
   -- Held individual
   ['Baron']        = true, ['Shoot the Moon']   = true,
   ['Reserved Parking'] = true, ['Raised Fist']  = true,
+  -- Held-condition joker_main: reads G.hand.cards directly (the full
+  -- pre-play hand during F2 analysis), so it must be evaluated per combo
+  -- against the post-play held set — synthesized at its slot in score_combo.
+  ['Blackboard'] = true,
   -- Before / discard / first-hand only
   ['DNA']        = true, ['Vampire']        = true,
   ['Midas Mask'] = true, ['Space Joker']    = true,
@@ -2275,6 +2279,34 @@ local function score_combo(cards, all_cards, prob_config, range_config, precompu
               or 3
             effect = { Xmult_mod = xm }
           end
+        end
+      end
+
+      -- Blackboard (in joker_main_no_fire): ×Mult when every card LEFT
+      -- in hand after this play is Spades or Clubs. Vanilla reads
+      -- G.hand.cards directly (card.lua:3951), which during F2 analysis
+      -- is the full pre-play hand — wrong per combo. Evaluate the
+      -- post-play held set (all_cards minus played) here, at the joker's
+      -- slot. An empty hold counts as all-black (vanilla's 0 == 0).
+      -- suit_matches mirrors is_suit(..,flush_calc=true): Stone → not
+      -- black, Wild → any, Smeared → S/C merge. With respect_face_down,
+      -- a face-down hold is unknowable so it can't guarantee all-black.
+      -- r_name covers Blueprint/Brainstorm copies (each fires its own ×).
+      if not effect and r_name == 'Blackboard' then
+        local all_black = true
+        for _, c in ipairs(all_cards) do
+          if not played[c] then
+            if (respect_face_down and is_face_down(c))
+              or not (suit_matches(c, 'Spades') or suit_matches(c, 'Clubs')) then
+              all_black = false
+              break
+            end
+          end
+        end
+        if all_black then
+          local xm = (r_entry and r_entry.ability and r_entry.ability.extra)
+            or joker.ability.extra or 3
+          effect = { Xmult_mod = xm }
         end
       end
 
